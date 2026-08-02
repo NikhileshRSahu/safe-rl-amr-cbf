@@ -1,7 +1,33 @@
-gymnasium
-stable-baselines3
-cvxpy
-numpy
-scipy
-matplotlib
-opencv-python
+# Core numerical / scientific stack
+numpy>=1.24,<2.0
+scipy>=1.10
+
+# Deep learning
+torch>=2.1
+# If you need a specific CUDA build, install torch separately following
+# https://pytorch.org/get-started/locally/ before installing this file.
+
+# RL environment interface
+gymnasium>=0.29
+
+# CBF-QP safety filter solver backends (cbf.py)
+# 'scipy' backend (SLSQP) is the default and requires only scipy above.
+# 'cvxpy'/'osqp' backend is optional; install these two to enable it.
+cvxpy>=1.4
+osqp>=0.6.3
+
+# Optional: only imported (guarded by try/except) in policy.py if you use
+# SafeRLPolicy as an SB3-compatible ActorCriticPolicy.
+stable-baselines3>=2.2.1
+
+# Visualization / rendering
+matplotlib>=3.7
+
+# Experiment tracking
+tensorboard>=2.14
+
+# Console progress bars (train.py)
+tqdm>=4.66
+
+# Optional: episode GIF export in evaluate.py (--save-video-dir)
+imageio>=2.31

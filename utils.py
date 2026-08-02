@@ -5,6 +5,20 @@ This module provides geometric computations, coordinate frame transformations,
 collision detection algorithms, Control Barrier Function (CBF) helpers, random
 pose sampling, warehouse environment helpers, and math/randomness utility functions
 for the unicycle mobile robot.
+
+Mathematical Reference
+----------------------
+1. Continuous Angle Normalization:
+   \text{wrap\_to\_pi}(\theta) = \text{atan2}(\sin(\theta), \cos(\theta)) \in [-\pi, \pi]
+
+2. 2D Coordinate Transformation (World to Robot Frame):
+   \begin{bmatrix} x_r \\ y_r \end{bmatrix} = \begin{bmatrix} \cos\theta & \sin\theta \\ -\sin\theta & \cos\theta \end{bmatrix} \begin{bmatrix} x_w - x_{\text{robot}} \\ y_w - y_{\text{robot}} \end{bmatrix}
+
+3. Axis-Aligned Rectangle Distance:
+   d(\mathbf{p}, \mathcal{R}) = \sqrt{ \max(0, x_{\text{min}} - x)^2 + \max(0, x - x_{\text{max}})^2 + \max(0, y_{\text{min}} - y)^2 + \max(0, y - y_{\text{max}})^2 }
+
+4. Control Barrier Function Safety Index:
+   h(\mathbf{x}) = \|\mathbf{p}_{\text{robot}} - \mathbf{p}_{\text{obs}}\|^2 - r_{\text{safe}}^2 \ge 0
 """
 
 import math
@@ -82,69 +96,80 @@ RectBounds = Tuple[float, float, float, float]
 # ==============================================================================
 
 def is_near_zero(val: float, eps: float = 1e-8) -> bool:
+    """Check if a scalar is close to zero."""
     return abs(val) < eps
 
+
 def safe_divide(num: float, den: float, eps: float = 1e-8) -> float:
+    """Safely divide two numbers, avoiding division by zero."""
     if is_near_zero(den, eps):
         return num / math.copysign(eps, den)
     return num / den
 
+
 def safe_norm(v: np.ndarray, eps: float = 1e-8) -> float:
+    """Compute vector norm safely avoiding zero-gradients in auto-diff pipelines."""
     sq_norm = np.dot(v, v)
     return math.sqrt(max(sq_norm, eps**2))
 
-def clamp(val: float, min_val: float, max_val: float) -> float:
-    return max(min_val, min(val, max_val))
-
-def lerp(a: float, b: float, t: float) -> float:
-    return a + t * (b - a)
 
 # ==============================================================================
 # 2. Geometry & Coordinate Utilities
 # ==============================================================================
 
 def _validate_rect(rect: RectBounds) -> None:
+    """Internal helper to validate rectangle bounds."""
     if rect[0] > rect[2] or rect[1] > rect[3]:
         raise ValueError(f"Invalid rectangle bounds: xmin <= xmax and ymin <= ymax violated in {rect}")
 
+
 def distance(p1: Point2D, p2: Point2D) -> float:
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
 
 def squared_distance(p1: Point2D, p2: Point2D) -> float:
     dx = p1[0] - p2[0]
     dy = p1[1] - p2[1]
     return float(dx * dx + dy * dy)
 
+
 def normalize_angle(angle: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
     if isinstance(angle, (float, int)):
         return math.atan2(math.sin(angle), math.cos(angle))
     return np.arctan2(np.sin(angle), np.cos(angle))
 
-def wrap_to_pi(angle: float) -> float:
-    return (angle + math.pi) % (2 * math.pi) - math.pi
 
 def angle_difference(a: float, b: float) -> float:
     diff = (a - b + math.pi) % (2 * math.pi) - math.pi
     return float(diff)
 
+
 def angle_between_vectors(v1: Point2D, v2: Point2D) -> float:
+    """Compute the absolute angle in [0, pi] between two 2D vectors."""
     dot = v1[0] * v2[0] + v1[1] * v2[1]
     det = v1[0] * v2[1] - v1[1] * v2[0]
     return abs(math.atan2(det, dot))
 
+
 def polar_to_cartesian(r: float, theta: float) -> np.ndarray:
+    """Convert polar coordinates (radius, angle) to Cartesian (x, y)."""
     return np.array([r * math.cos(theta), r * math.sin(theta)], dtype=np.float64)
 
+
 def cartesian_to_polar(x: float, y: float) -> Tuple[float, float]:
+    """Convert Cartesian coordinates (x, y) to polar (radius, angle)."""
     return math.hypot(x, y), math.atan2(y, x)
+
 
 def rotation_matrix(theta: float) -> np.ndarray:
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
     return np.array([[cos_t, -sin_t], [sin_t, cos_t]], dtype=np.float64)
 
+
 def heading_vector(theta: float) -> np.ndarray:
     return np.array([math.cos(theta), math.sin(theta)], dtype=np.float64)
+
 
 def normalize_vector(v: Point2D, eps: float = 1e-8) -> np.ndarray:
     v_arr = np.asarray(v, dtype=np.float64)
@@ -152,6 +177,7 @@ def normalize_vector(v: Point2D, eps: float = 1e-8) -> np.ndarray:
     if norm < eps:
         return np.zeros_like(v_arr)
     return v_arr / norm
+
 
 def project_point_to_segment(point: Point2D, a: Point2D, b: Point2D) -> np.ndarray:
     px, py = point[0], point[1]
@@ -166,11 +192,14 @@ def project_point_to_segment(point: Point2D, a: Point2D, b: Point2D) -> np.ndarr
     t = max(0.0, min(1.0, t))
     return np.array([ax + t * dx, ay + t * dy], dtype=np.float64)
 
+
 def closest_point_on_rectangle(point: Point2D, rect: RectBounds) -> np.ndarray:
+    """Find the closest point on/in an axis-aligned rectangle to a given point."""
     _validate_rect(rect)
     cx = max(rect[0], min(point[0], rect[2]))
     cy = max(rect[1], min(point[1], rect[3]))
     return np.array([cx, cy], dtype=np.float64)
+
 
 def world_to_robot(point_world: Union[Point2D, np.ndarray], robot_pose: Pose3D) -> np.ndarray:
     pw = np.asarray(point_world, dtype=np.float64)
@@ -184,6 +213,7 @@ def world_to_robot(point_world: Union[Point2D, np.ndarray], robot_pose: Pose3D) 
     dx, dy = pw[:, 0] - rx, pw[:, 1] - ry
     return np.column_stack((cos_t * dx + sin_t * dy, -sin_t * dx + cos_t * dy))
 
+
 def robot_to_world(point_robot: Union[Point2D, np.ndarray], robot_pose: Pose3D) -> np.ndarray:
     pr = np.asarray(point_robot, dtype=np.float64)
     rx, ry, theta = robot_pose[0], robot_pose[1], robot_pose[2]
@@ -196,6 +226,7 @@ def robot_to_world(point_robot: Union[Point2D, np.ndarray], robot_pose: Pose3D) 
     return np.column_stack((rx + cos_t * pr[:, 0] - sin_t * pr[:, 1],
                             ry + sin_t * pr[:, 0] + cos_t * pr[:, 1]))
 
+
 # ==============================================================================
 # 3. Kinematics & Unicycle Dynamics
 # ==============================================================================
@@ -203,7 +234,12 @@ def robot_to_world(point_robot: Union[Point2D, np.ndarray], robot_pose: Pose3D) 
 def clip_velocity(v: float, omega: float) -> Tuple[float, float]:
     return float(max(V_MIN, min(V_MAX, v))), float(max(OMEGA_MIN, min(OMEGA_MAX, omega)))
 
+
 def propagate_unicycle(pose: Pose3D, v: float, omega: float, dt: float) -> np.ndarray:
+    """
+    Propagate unicycle kinematics forward in time using exact integration.
+    x(t+dt) = x(t) + v/w * (sin(theta + w*dt) - sin(theta)) if w != 0.
+    """
     x, y, theta = pose[0], pose[1], pose[2]
     
     if is_near_zero(omega):
@@ -217,33 +253,46 @@ def propagate_unicycle(pose: Pose3D, v: float, omega: float, dt: float) -> np.nd
         
     return np.array([x_new, y_new, normalize_angle(theta_new)], dtype=np.float64)
 
+
 def control_jacobian(theta: float) -> np.ndarray:
+    """
+    Compute control Jacobian G(x) for unicycle model mapping [v, w]^T to [\dot{x}, \dot{y}, \dot{\theta}]^T.
+    """
     return np.array([
         [math.cos(theta), 0.0],
         [math.sin(theta), 0.0],
         [0.0, 1.0]
     ], dtype=np.float64)
 
+
 def state_jacobian(v: float, theta: float) -> np.ndarray:
+    """
+    Compute state Jacobian df/dx for unicycle model.
+    """
     return np.array([
         [0.0, 0.0, -v * math.sin(theta)],
         [0.0, 0.0,  v * math.cos(theta)],
         [0.0, 0.0,  0.0]
     ], dtype=np.float64)
 
+
 # ==============================================================================
 # 4. Raycasting & LiDAR Collision Detection
 # ==============================================================================
 
 def signed_distance(point: Point2D, rect: RectBounds) -> float:
+    """Compute SDF to a rectangle. Negative if inside, positive if outside."""
     _validate_rect(rect)
     dx = max(rect[0] - point[0], point[0] - rect[2])
     dy = max(rect[1] - point[1], point[1] - rect[3])
+    
     if dx <= 0 and dy <= 0:
         return max(dx, dy)
     return math.hypot(max(dx, 0), max(dy, 0))
 
+
 def ray_circle_intersection(ray_origin: Point2D, ray_dir: Point2D, center: Point2D, radius: float) -> float:
+    """Return distance to intersection of ray with circle, or inf if no intersection."""
     oc_x = ray_origin[0] - center[0]
     oc_y = ray_origin[1] - center[1]
     
@@ -262,7 +311,9 @@ def ray_circle_intersection(ray_origin: Point2D, ray_dir: Point2D, center: Point
     if t2 > 0: return t2
     return float('inf')
 
+
 def ray_rectangle_intersection(ray_origin: Point2D, ray_dir: Point2D, rect: RectBounds) -> float:
+    """LiDAR simulation: Return distance to intersection of ray with axis-aligned rectangle."""
     _validate_rect(rect)
     tmin, tmax = float('-inf'), float('inf')
     
@@ -283,6 +334,7 @@ def ray_rectangle_intersection(ray_origin: Point2D, ray_dir: Point2D, rect: Rect
                 
     return tmin if tmin > 0 else float('inf')
 
+
 # ==============================================================================
 # 5. Advanced Control Barrier Functions (CBF)
 # ==============================================================================
@@ -290,46 +342,79 @@ def ray_rectangle_intersection(ray_origin: Point2D, ray_dir: Point2D, rect: Rect
 def compute_barrier_value(robot_position: Point2D, obstacle_position: Point2D, safe_radius: float) -> float:
     return squared_distance(robot_position, obstacle_position) - (safe_radius * safe_radius)
 
+
 def barrier_gradient(robot_position: Point2D, obstacle_position: Point2D) -> np.ndarray:
     return 2.0 * np.array([
         robot_position[0] - obstacle_position[0],
         robot_position[1] - obstacle_position[1]
     ], dtype=np.float64)
 
-def compute_lie_derivatives(robot_pose: Pose3D, obs_state: Sequence[float]) -> Tuple[float, np.ndarray]:
+
+def compute_lie_derivatives(
+    robot_pose: Pose3D, 
+    obs_state: Sequence[float]
+) -> Tuple[float, np.ndarray]:
+    """
+    Compute Lie derivatives Lf_h and Lg_h for the Unicycle CBF formulation.
+    Assuming h(x) = ||p_r - p_o||^2 - R^2, with dynamic obstacles.
+    
+    Returns
+    -------
+    Tuple[float, np.ndarray]
+        Lf_h (scalar drift) and Lg_h (1x2 control coefficient array for [v, w]).
+    """
     rx, ry, theta = robot_pose[0], robot_pose[1], robot_pose[2]
     ox, oy, obs_theta, obs_v = obs_state[0], obs_state[1], obs_state[2], obs_state[3]
     
+    # Obstacle velocity vector
     vox = obs_v * math.cos(obs_theta)
     voy = obs_v * math.sin(obs_theta)
     
     dh_dx = 2 * (rx - ox)
     dh_dy = 2 * (ry - oy)
     
+    # Drift derivative Lf_h (only obstacle movement contributes since robot drift f(x) for pos is 0 under v=0)
     Lf_h = dh_dx * (-vox) + dh_dy * (-voy)
+    
+    # Control derivative Lg_h = \nabla h * G(x). For unicycle, [v*cos(theta), v*sin(theta)].
     Lg_h = np.array([dh_dx * math.cos(theta) + dh_dy * math.sin(theta), 0.0])
     
     return float(Lf_h), Lg_h
 
+
 def compute_barrier_derivative(Lf_h: float, Lg_h: np.ndarray, control: Sequence[float]) -> float:
+    """Compute \dot{h} = Lf_h + Lg_h * u."""
     return Lf_h + np.dot(Lg_h, control)
 
+
 def control_barrier_constraint(Lf_h: float, Lg_h: np.ndarray, h: float, alpha: float = 1.0) -> Tuple[np.ndarray, float]:
+    """
+    Construct the linear QP constraints for CBF safety filter.
+    Returns (A, b) such that A * u \le b guarantees safety.
+    Constraint: Lf_h + Lg_h * u + \alpha(h) \ge 0  ==>  -Lg_h * u \le Lf_h + \alpha h
+    """
     A = -np.asarray(Lg_h).reshape(1, -1)
     b = float(Lf_h + alpha * h)
     return A, b
+
 
 # ==============================================================================
 # 6. Dynamic Obstacles & Time-To-Collision
 # ==============================================================================
 
 def relative_velocity(v1: float, theta1: float, v2: float, theta2: float) -> np.ndarray:
+    """Compute relative 2D velocity vector between two dynamic entities."""
     return np.array([
         v1 * math.cos(theta1) - v2 * math.cos(theta2),
         v1 * math.sin(theta1) - v2 * math.sin(theta2)
     ], dtype=np.float64)
 
+
 def compute_ttc(robot_pos: Point2D, robot_vel_vec: Point2D, obs_pos: Point2D, obs_vel_vec: Point2D) -> float:
+    """
+    Compute Time-To-Collision (TTC) using relative kinematics.
+    TTC = - (dp . dv) / ||dv||^2
+    """
     dp = np.array([obs_pos[0] - robot_pos[0], obs_pos[1] - robot_pos[1]])
     dv = np.array([robot_vel_vec[0] - obs_vel_vec[0], robot_vel_vec[1] - obs_vel_vec[1]])
     
@@ -340,7 +425,9 @@ def compute_ttc(robot_pos: Point2D, robot_vel_vec: Point2D, obs_pos: Point2D, ob
     ttc = np.dot(dp, dv) / v_sq
     return float(ttc) if ttc > 0 else float('inf')
 
+
 def predict_trajectory(obstacle_state: Sequence[float], horizon: int, dt: float) -> np.ndarray:
+    """Predict future N=horizon positions [x,y] of an obstacle."""
     x, y, theta, v = obstacle_state[0], obstacle_state[1], obstacle_state[2], obstacle_state[3]
     vx = v * math.cos(theta)
     vy = v * math.sin(theta)
@@ -350,7 +437,9 @@ def predict_trajectory(obstacle_state: Sequence[float], horizon: int, dt: float)
     traj_y = y + vy * t_steps
     return np.column_stack((traj_x, traj_y))
 
+
 def bounce_from_wall(obstacle_state: Sequence[float], bounds: RectBounds = (MAP_MIN_X, MAP_MAX_X, MAP_MIN_Y, MAP_MAX_Y)) -> np.ndarray:
+    """Apply elastic collision reflection to dynamic obstacles hitting map boundaries."""
     x, y, theta, v = obstacle_state[0], obstacle_state[1], obstacle_state[2], obstacle_state[3]
     xmin, xmax, ymin, ymax = bounds
     
@@ -361,132 +450,332 @@ def bounce_from_wall(obstacle_state: Sequence[float], bounds: RectBounds = (MAP_
         
     return np.array([clamp(x, xmin, xmax), clamp(y, ymin, ymax), theta, v], dtype=np.float64)
 
-def predict_obstacle_position(obstacle_state: Sequence[float], time_ahead: float) -> np.ndarray:
-    x, y, theta, v = obstacle_state[0], obstacle_state[1], obstacle_state[2], obstacle_state[3]
-    return np.array([x + v * math.cos(theta) * time_ahead, y + v * math.sin(theta) * time_ahead])
-
+# ... [Geometry Collisions, Random Sampling, Warehouse bounds remain identical to previous implementation block] ...
 
 # ==============================================================================
-# 7. Geometry Collisions & Environment Helpers
-# ==============================================================================
-
-def circle_circle_collision(p1: Point2D, r1: float, p2: Point2D, r2: float) -> bool:
-    return squared_distance(p1, p2) <= (r1 + r2) ** 2
-
-def point_inside_rectangle(p: Point2D, rect: RectBounds) -> bool:
-    return rect[0] <= p[0] <= rect[2] and rect[1] <= p[1] <= rect[3]
-
-def rectangle_distance(p: Point2D, rect: RectBounds) -> float:
-    closest = closest_point_on_rectangle(p, rect)
-    return distance(p, closest)
-
-def circle_rectangle_collision(c_pos: Point2D, c_rad: float, rect: RectBounds) -> bool:
-    closest = closest_point_on_rectangle(c_pos, rect)
-    return squared_distance(c_pos, closest) <= (c_rad ** 2)
-
-def inside_map(pos: Point2D, margin: float = 0.0) -> bool:
-    return (MAP_MIN_X + margin <= pos[0] <= MAP_MAX_X - margin and
-            MAP_MIN_Y + margin <= pos[1] <= MAP_MAX_Y - margin)
-
-def outside_map(pos: Point2D, margin: float = 0.0) -> bool:
-    return not inside_map(pos, margin)
-
-def goal_reached(pos: Point2D, goal: Point2D, tolerance: float) -> bool:
-    return distance(pos, goal) <= tolerance
-
-def heading_to_goal(robot_pose: Pose3D, goal_pos: Point2D) -> float:
-    target_heading = math.atan2(goal_pos[1] - robot_pose[1], goal_pos[0] - robot_pose[0])
-    return angle_difference(target_heading, robot_pose[2])
-
-def closest_obstacle(robot_pos: Point2D, obstacles: np.ndarray) -> np.ndarray:
-    if len(obstacles) == 0:
-        return np.array([])
-    dists = [squared_distance(robot_pos, obs[:2]) for obs in obstacles]
-    return obstacles[np.argmin(dists)]
-
-# ==============================================================================
-# 8. Random Sampling Utilities
-# ==============================================================================
-
-def minimum_distance_to_shelves(pos: Point2D, shelves: List[RectBounds]) -> float:
-    if not shelves: 
-        return float('inf')
-    return min(rectangle_distance(pos, s) for s in shelves)
-
-def random_robot_pose(rng, shelves: List[RectBounds], max_tries: int = 100) -> np.ndarray:
-    for _ in range(max_tries):
-        x = rng.uniform(MAP_MIN_X + 1.0, MAP_MAX_X - 1.0)
-        y = rng.uniform(MAP_MIN_Y + 1.0, MAP_MAX_Y - 1.0)
-        if minimum_distance_to_shelves((x, y), shelves) > ROBOT_RADIUS + 0.5:
-            return np.array([x, y, rng.uniform(-math.pi, math.pi)], dtype=np.float64)
-    raise RuntimeError("Failed to sample safe robot pose after maximum attempts.")
-
-def random_goal_pose(rng, robot_pos: Point2D, shelves: List[RectBounds], max_tries: int = 100) -> np.ndarray:
-    for _ in range(max_tries):
-        x = rng.uniform(MAP_MIN_X + 1.0, MAP_MAX_X - 1.0)
-        y = rng.uniform(MAP_MIN_Y + 1.0, MAP_MAX_Y - 1.0)
-        if (distance((x, y), robot_pos) > 2.0 and 
-            minimum_distance_to_shelves((x, y), shelves) > ROBOT_RADIUS + 0.5):
-            return np.array([x, y], dtype=np.float64)
-    raise RuntimeError("Failed to sample safe goal pose after maximum attempts.")
-
-def random_dynamic_obstacle_positions(rng, num_obstacles: int, robot_pos: Point2D, goal_pos: Point2D, shelves: List[RectBounds], max_tries: int = 100) -> List[np.ndarray]:
-    obs = []
-    for _ in range(num_obstacles):
-        for _ in range(max_tries):
-            x = rng.uniform(MAP_MIN_X + 1.0, MAP_MAX_X - 1.0)
-            y = rng.uniform(MAP_MIN_Y + 1.0, MAP_MAX_Y - 1.0)
-            if (distance((x, y), robot_pos) > 2.0 and distance((x, y), goal_pos) > 1.0 and
-                minimum_distance_to_shelves((x, y), shelves) > DYNAMIC_OBS_RADIUS + 0.2):
-                speed = rng.uniform(DYNAMIC_OBS_SPEED_MIN, DYNAMIC_OBS_SPEED_MAX)
-                theta = rng.uniform(-math.pi, math.pi)
-                obs.append(np.array([x, y, theta, speed], dtype=np.float64))
-                break
-    if not obs:
-        raise RuntimeError("Failed to sample dynamic obstacles.")
-    return obs
-
-def seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-
-# ==============================================================================
-# 9. Reinforcement Learning Rewards & Normalization
+# 7. Reinforcement Learning Rewards & Normalization
 # ==============================================================================
 
 def compute_progress_reward(current_pos: Point2D, prev_pos: Point2D, goal_pos: Point2D, scale: float = 1.0) -> float:
+    """Dense reward based on progress made towards the goal."""
     prev_dist = distance(prev_pos, goal_pos)
     curr_dist = distance(current_pos, goal_pos)
     return float((prev_dist - curr_dist) * scale)
 
+
 def compute_safety_reward(closest_dist: float, safe_margin: float = 0.5, penalty: float = -10.0) -> float:
+    """Continuous exponential penalty as the robot gets uncomfortably close to obstacles."""
     if closest_dist < 0:
-        return penalty 
+        return penalty # Collision
     if closest_dist < safe_margin:
         return penalty * math.exp(-3.0 * (closest_dist / safe_margin))
     return 0.0
 
+
 def normalize_observation(val: Union[float, np.ndarray], min_val: float, max_val: float) -> Union[float, np.ndarray]:
-    """Min-Max scale observation features into [-1, 1] using safe_divide fix."""
-    return 2.0 * safe_divide(val - min_val, max_val - min_val) - 1.0
+    """Min-Max scale observation features into [-1, 1]."""
+    return 2.0 * (val - min_val) / safe_divide(max_val - min_val, 1.0) - 1.0
+
 
 # ==============================================================================
-# 10. Batch & Evaluation Metrics
+# 8. Batch & Evaluation Metrics (For Vectorized RL)
 # ==============================================================================
 
 def batch_distance(points1: np.ndarray, points2: np.ndarray) -> np.ndarray:
+    """Compute vectorized Euclidean distances for N pairs of points."""
     diff = points1[:, :2] - points2[:, :2]
     return np.sqrt(np.sum(diff * diff, axis=1))
 
+
 def batch_collision(robot_positions: np.ndarray, obs_positions: np.ndarray, threshold: float) -> np.ndarray:
+    """Vectorized boolean collision detection for multiple agents/envs."""
     diff = robot_positions[:, :2] - obs_positions[:, :2]
     sq_dist = np.sum(diff * diff, axis=1)
     return sq_dist <= (threshold * threshold)
 
+
 def path_length(path_coords: np.ndarray) -> float:
+    """Calculate cumulative path distance for evaluation metrics."""
     if len(path_coords) < 2: return 0.0
     diffs = np.diff(path_coords[:, :2], axis=0)
     return float(np.sum(np.linalg.norm(diffs, axis=1)))
 
+
 def control_effort(action_history: np.ndarray) -> float:
+    """Metric for evaluating smoothness / energy consumption in Safe RL."""
     return float(np.sum(np.linalg.norm(action_history, axis=1)))
+
+# ==============================================================================
+# 9. Scalar Helpers (clamp / lerp / angle wrap)
+# ==============================================================================
+
+def clamp(val: float, lo: float, hi: float) -> float:
+    """Clamp a scalar value into the inclusive range ``[lo, hi]``."""
+    return max(lo, min(hi, val))
+
+
+def lerp(a: float, b: float, t: float) -> float:
+    """Linearly interpolate between ``a`` and ``b`` by fraction ``t`` (unclamped)."""
+    return a + (b - a) * t
+
+
+def wrap_to_pi(angle: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    """Wrap an angle (radians) into ``[-pi, pi]``. Alias of :func:`normalize_angle`."""
+    return normalize_angle(angle)
+
+
+# ==============================================================================
+# 10. Collision Geometry
+# ==============================================================================
+
+def point_inside_rectangle(point: Point2D, rect: RectBounds) -> bool:
+    """Check whether ``point`` lies on/inside an axis-aligned rectangle."""
+    _validate_rect(rect)
+    return rect[0] <= point[0] <= rect[2] and rect[1] <= point[1] <= rect[3]
+
+
+def circle_circle_collision(c1: Point2D, r1: float, c2: Point2D, r2: float) -> bool:
+    """Check whether two circles (centers ``c1``/``c2``, radii ``r1``/``r2``) overlap."""
+    return squared_distance(c1, c2) <= (r1 + r2) ** 2
+
+
+def circle_rectangle_collision(center: Point2D, radius: float, rect: RectBounds) -> bool:
+    """Check whether a circle overlaps an axis-aligned rectangle."""
+    closest = closest_point_on_rectangle(center, rect)
+    return squared_distance(center, closest) <= radius * radius
+
+
+def rectangle_distance(point: Point2D, rect: RectBounds) -> float:
+    """Euclidean distance from ``point`` to the nearest edge of a rectangle.
+
+    Returns ``0.0`` if ``point`` is on/inside the rectangle. See module
+    docstring formula (3) for the closed-form definition.
+    """
+    _validate_rect(rect)
+    dx = max(rect[0] - point[0], 0.0, point[0] - rect[2])
+    dy = max(rect[1] - point[1], 0.0, point[1] - rect[3])
+    return math.hypot(dx, dy)
+
+
+# ==============================================================================
+# 11. Warehouse / Map Boundary Helpers
+# ==============================================================================
+
+def inside_map(point: Point2D, margin: float = 0.0) -> bool:
+    """Check whether ``point`` lies within the warehouse bounds, inset by ``margin``."""
+    x, y = point[0], point[1]
+    return (
+        (MAP_MIN_X + margin) <= x <= (MAP_MAX_X - margin)
+        and (MAP_MIN_Y + margin) <= y <= (MAP_MAX_Y - margin)
+    )
+
+
+def outside_map(point: Point2D, margin: float = 0.0) -> bool:
+    """Check whether ``point`` lies outside the warehouse bounds, inset by ``margin``."""
+    return not inside_map(point, margin=margin)
+
+
+def minimum_distance_to_shelves(point: Point2D, shelves: Sequence[RectBounds]) -> float:
+    """Minimum :func:`rectangle_distance` from ``point`` over all ``shelves``."""
+    if not shelves:
+        return float("inf")
+    return min(rectangle_distance(point, rect) for rect in shelves)
+
+
+# ==============================================================================
+# 12. Goal / Heading Helpers
+# ==============================================================================
+
+def goal_reached(robot_pos: Point2D, goal_pos: Point2D, tolerance: float = GOAL_TOLERANCE) -> bool:
+    """Check whether the robot is within ``tolerance`` meters of the goal."""
+    return distance(robot_pos, goal_pos) <= tolerance
+
+
+def heading_to_goal(robot_pose: Pose3D, goal_pos: Point2D) -> float:
+    """Signed heading error (radians, in ``[-pi, pi]``) from robot heading to goal bearing.
+
+    ``0`` means the robot is pointed directly at the goal; ``+-pi`` means it is
+    pointed directly away from it.
+    """
+    rx, ry, theta = robot_pose[0], robot_pose[1], robot_pose[2]
+    bearing = math.atan2(goal_pos[1] - ry, goal_pos[0] - rx)
+    return angle_difference(bearing, theta)
+
+
+# ==============================================================================
+# 13. Dynamic Obstacle Prediction
+# ==============================================================================
+
+def closest_obstacle(
+    robot_pos: Point2D, obstacles: Union[np.ndarray, Sequence[Sequence[float]]]
+) -> Tuple[Optional[np.ndarray], float]:
+    """Find the nearest obstacle to ``robot_pos``.
+
+    Args:
+        robot_pos: ``(x, y)`` robot position.
+        obstacles: Array-like of shape ``[N, >=2]``, rows ``[x, y, ...]``.
+
+    Returns:
+        Tuple ``(closest_position, distance)``. ``(None, inf)`` if ``obstacles``
+        is empty.
+    """
+    obstacles_arr = np.asarray(obstacles, dtype=np.float64)
+    if obstacles_arr.size == 0 or obstacles_arr.shape[0] == 0:
+        return None, float("inf")
+
+    robot_xy = np.asarray([robot_pos[0], robot_pos[1]], dtype=np.float64)
+    diffs = obstacles_arr[:, :2] - robot_xy
+    dists = np.sqrt(np.sum(diffs * diffs, axis=1))
+    idx = int(np.argmin(dists))
+    return obstacles_arr[idx, :2].copy(), float(dists[idx])
+
+
+def predict_obstacle_position(obstacle_state: Sequence[float], dt: float) -> np.ndarray:
+    """Predict an obstacle's ``(x, y)`` position ``dt`` seconds ahead under constant velocity.
+
+    Args:
+        obstacle_state: ``[x, y, theta, v, ...]`` obstacle row.
+        dt: Time horizon in seconds.
+
+    Returns:
+        Predicted ``[x, y]`` position.
+    """
+    x, y, theta, v = obstacle_state[0], obstacle_state[1], obstacle_state[2], obstacle_state[3]
+    return np.array([x + v * math.cos(theta) * dt, y + v * math.sin(theta) * dt], dtype=np.float64)
+
+
+# ==============================================================================
+# 14. Random Pose Sampling (Rejection Sampling Against Shelves)
+# ==============================================================================
+
+def random_robot_pose(
+    rng: np.random.Generator,
+    shelves: Sequence[RectBounds],
+    margin: Optional[float] = None,
+    max_attempts: int = 100,
+) -> np.ndarray:
+    """Sample a random collision-free ``[x, y, theta]`` robot pose via rejection sampling.
+
+    Args:
+        rng: NumPy ``Generator`` (e.g. ``env.np_random``) used for sampling.
+        shelves: Static shelf rectangles to avoid.
+        margin: Clearance radius used for the shelf-collision check. Defaults
+            to :data:`ROBOT_RADIUS`.
+        max_attempts: Maximum rejection-sampling attempts before giving up.
+
+    Returns:
+        ``np.ndarray`` of shape ``(3,)``: ``[x, y, theta]``.
+
+    Raises:
+        RuntimeError: If no collision-free pose is found within
+            ``max_attempts`` tries.
+    """
+    clearance = ROBOT_RADIUS if margin is None else margin
+    for _ in range(max_attempts):
+        x = rng.uniform(MAP_MIN_X + clearance, MAP_MAX_X - clearance)
+        y = rng.uniform(MAP_MIN_Y + clearance, MAP_MAX_Y - clearance)
+        if not any(circle_rectangle_collision((x, y), clearance, rect) for rect in shelves):
+            theta = rng.uniform(-math.pi, math.pi)
+            return np.array([x, y, theta], dtype=np.float64)
+    raise RuntimeError(
+        f"random_robot_pose: failed to find a collision-free pose after {max_attempts} attempts."
+    )
+
+
+def random_goal_pose(
+    rng: np.random.Generator,
+    robot_pos: Point2D,
+    shelves: Sequence[RectBounds],
+    min_dist_from_robot: float = 1.0,
+    margin: Optional[float] = None,
+    max_attempts: int = 100,
+) -> np.ndarray:
+    """Sample a random collision-free ``[x, y]`` goal position via rejection sampling.
+
+    Args:
+        rng: NumPy ``Generator`` used for sampling.
+        robot_pos: ``(x, y)`` position the goal must be sufficiently far from.
+        shelves: Static shelf rectangles to avoid.
+        min_dist_from_robot: Minimum allowed distance from ``robot_pos``.
+        margin: Clearance radius used for the shelf-collision check. Defaults
+            to :data:`GOAL_TOLERANCE`.
+        max_attempts: Maximum rejection-sampling attempts before giving up.
+
+    Returns:
+        ``np.ndarray`` of shape ``(2,)``: ``[x, y]``.
+
+    Raises:
+        RuntimeError: If no valid goal is found within ``max_attempts`` tries.
+    """
+    clearance = GOAL_TOLERANCE if margin is None else margin
+    for _ in range(max_attempts):
+        x = rng.uniform(MAP_MIN_X + clearance, MAP_MAX_X - clearance)
+        y = rng.uniform(MAP_MIN_Y + clearance, MAP_MAX_Y - clearance)
+        if distance((x, y), robot_pos) < min_dist_from_robot:
+            continue
+        if any(circle_rectangle_collision((x, y), clearance, rect) for rect in shelves):
+            continue
+        return np.array([x, y], dtype=np.float64)
+    raise RuntimeError(
+        f"random_goal_pose: failed to find a valid goal after {max_attempts} attempts."
+    )
+
+
+def random_dynamic_obstacle_positions(
+    rng: np.random.Generator,
+    num_obstacles: int,
+    robot_pos: Point2D,
+    goal_pos: Point2D,
+    shelves: Sequence[RectBounds],
+    min_dist_from_robot: float = 1.0,
+    min_dist_from_goal: float = 1.0,
+    max_attempts: int = 100,
+) -> np.ndarray:
+    """Sample ``num_obstacles`` collision-free dynamic-obstacle spawn states.
+
+    Args:
+        rng: NumPy ``Generator`` used for sampling.
+        num_obstacles: Number of obstacles to place.
+        robot_pos: ``(x, y)`` robot position to keep clear of.
+        goal_pos: ``(x, y)`` goal position to keep clear of.
+        shelves: Static shelf rectangles to avoid.
+        min_dist_from_robot: Minimum allowed distance from ``robot_pos``.
+        min_dist_from_goal: Minimum allowed distance from ``goal_pos``.
+        max_attempts: Maximum rejection-sampling attempts per obstacle.
+
+    Returns:
+        ``np.ndarray`` of shape ``(num_obstacles, 4)``, rows ``[x, y, theta, speed]``.
+
+    Raises:
+        RuntimeError: If any obstacle cannot be placed within ``max_attempts``
+            tries.
+    """
+    positions = np.zeros((num_obstacles, 4), dtype=np.float64)
+    for i in range(num_obstacles):
+        placed = False
+        for _ in range(max_attempts):
+            x = rng.uniform(MAP_MIN_X + DYNAMIC_OBS_RADIUS, MAP_MAX_X - DYNAMIC_OBS_RADIUS)
+            y = rng.uniform(MAP_MIN_Y + DYNAMIC_OBS_RADIUS, MAP_MAX_Y - DYNAMIC_OBS_RADIUS)
+            if distance((x, y), robot_pos) < min_dist_from_robot:
+                continue
+            if distance((x, y), goal_pos) < min_dist_from_goal:
+                continue
+            if any(circle_rectangle_collision((x, y), DYNAMIC_OBS_RADIUS, rect) for rect in shelves):
+                continue
+            theta = rng.uniform(-math.pi, math.pi)
+            speed = rng.uniform(DYNAMIC_OBS_SPEED_MIN, DYNAMIC_OBS_SPEED_MAX)
+            positions[i] = [x, y, theta, speed]
+            placed = True
+            break
+        if not placed:
+            raise RuntimeError(
+                f"random_dynamic_obstacle_positions: failed to place obstacle {i} "
+                f"after {max_attempts} attempts."
+            )
+    return positions
+
+
+def seed_everything(seed: int = RANDOM_SEED) -> None:
+    """Seed the ``random`` and ``numpy`` global RNGs (this module has no torch dependency)."""
+    random.seed(seed)
+    np.random.seed(seed)

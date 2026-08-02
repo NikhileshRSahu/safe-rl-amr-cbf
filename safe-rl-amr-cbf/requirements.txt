@@ -1,7 +1,0 @@
-gymnasium
-stable-baselines3
-cvxpy
-numpy
-scipy
-matplotlib
-opencv-python
