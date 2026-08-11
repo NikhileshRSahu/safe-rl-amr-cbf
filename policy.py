@@ -572,6 +572,15 @@ def build_mlp_trunk(input_dim: int, hidden_sizes: Sequence[int]) -> nn.Module:
     layers = [nn.Linear(input_dim, width), nn.LayerNorm(width), nn.ReLU()]
     for _ in hidden_sizes[1:]:
         layers.append(ResidualMLPBlock(width))
+    # If the requested final hidden width differs from the residual block
+    # width, append a projection down to the requested output width so the
+    # trunk's output dimension matches ``hidden_sizes[-1]`` as callers
+    # expect (actor/critic heads assume this). This preserves residual
+    # structure while providing the correct final width.
+    if hidden_sizes[-1] != width:
+        layers.append(nn.Linear(width, hidden_sizes[-1]))
+        layers.append(nn.LayerNorm(hidden_sizes[-1]))
+        layers.append(nn.ReLU())
     return nn.Sequential(*layers)
 
 
@@ -846,6 +855,9 @@ class AttentionObstacleEncoder(nn.Module):
         if mask is None:
             mask = obstacle_set.new_ones((batch_size, max_obstacles), dtype=torch.bool)
 
+        # Ensure mask is boolean: replay buffer may return float32 arrays.
+        if mask is not None and mask.dtype != torch.bool:
+            mask = mask.bool()
         key_padding_mask = ~mask  # nn.MultiheadAttention masks out True entries.
         # Guard against a fully-masked row, which would otherwise produce NaNs
         # inside softmax; such rows contribute nothing after pooling anyway.

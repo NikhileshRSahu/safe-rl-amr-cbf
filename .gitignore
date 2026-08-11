@@ -1,2 +1,17 @@
-venv/
+﻿# Training artifacts
+runs/
+checkpoints/
+checkpoints_*/
+benchmark_results/
+*.tfevents.*
+tensorboard_logs/
+logs/
+plots/
+figures/
+eval_videos/
+
+# Python
 __pycache__/
+*.pyc
+venv/
+.venv/

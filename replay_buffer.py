@@ -70,19 +70,24 @@ class SafeReplayBuffer:
         
         if self.is_dict_obs:
             self.obs_keys = list(observation_space.spaces.keys())
-            self.obs = {
-                key: np.zeros((self.max_size, *space.shape), dtype=np.float32)
-                for key, space in observation_space.spaces.items()
-            }
-            self.next_obs = {
-                key: np.zeros((self.max_size, *space.shape), dtype=np.float32)
-                for key, space in observation_space.spaces.items()
-            }
+            self.obs = {}
+            self.next_obs = {}
+            self.obs_dtypes = {}
+            for key, space in observation_space.spaces.items():
+                # Use the Gym space's declared dtype when pre-allocating storage.
+                dtype = getattr(space, "dtype", np.float32)
+                np_dtype = np.dtype(dtype)
+                self.obs_dtypes[key] = np_dtype
+                self.obs[key] = np.zeros((self.max_size, *space.shape), dtype=np_dtype)
+                self.next_obs[key] = np.zeros((self.max_size, *space.shape), dtype=np_dtype)
         else:
             # Fallback for flat Box spaces
             self.obs_keys = ["flat"]
-            self.obs = {"flat": np.zeros((self.max_size, *observation_space.shape), dtype=np.float32)}
-            self.next_obs = {"flat": np.zeros((self.max_size, *observation_space.shape), dtype=np.float32)}
+            dtype = getattr(observation_space, "dtype", np.float32)
+            np_dtype = np.dtype(dtype)
+            self.obs_dtypes = {"flat": np_dtype}
+            self.obs = {"flat": np.zeros((self.max_size, *observation_space.shape), dtype=np_dtype)}
+            self.next_obs = {"flat": np.zeros((self.max_size, *observation_space.shape), dtype=np_dtype)}
 
         # Pre-allocated standard numpy storage
         self.action = np.zeros((self.max_size, action_dim), dtype=np.float32)
@@ -170,11 +175,19 @@ class SafeReplayBuffer:
 
         # Batch structural dicts directly to PyTorch tensors on the correct device
         obs_batch = {
-            key: torch.as_tensor(self.obs[key][idx], dtype=torch.float32, device=self.device)
+            key: (
+                torch.as_tensor(self.obs[key][idx], dtype=torch.bool, device=self.device)
+                if np.issubdtype(self.obs_dtypes[key], np.bool_)
+                else torch.as_tensor(self.obs[key][idx], dtype=torch.float32, device=self.device)
+            )
             for key in self.obs_keys
         }
         next_obs_batch = {
-            key: torch.as_tensor(self.next_obs[key][idx], dtype=torch.float32, device=self.device)
+            key: (
+                torch.as_tensor(self.next_obs[key][idx], dtype=torch.bool, device=self.device)
+                if np.issubdtype(self.obs_dtypes[key], np.bool_)
+                else torch.as_tensor(self.next_obs[key][idx], dtype=torch.float32, device=self.device)
+            )
             for key in self.obs_keys
         }
 

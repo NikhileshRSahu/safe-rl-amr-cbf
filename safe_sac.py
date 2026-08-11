@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+import logging
 import numpy as np
 import torch
 import torch.nn as nn
@@ -55,6 +56,8 @@ from gymnasium import spaces
 
 from policy import PolicyConfig, SafeRLPolicy
 from replay_buffer import SafeReplayBuffer
+
+logger = logging.getLogger(__name__)
 
 ObsDict = Dict[str, np.ndarray]
 
@@ -180,9 +183,34 @@ class SafeSACAgent:
                 self.policy.entropy_temperature.parameters(), lr=self.sac_config.alpha_lr
             )
 
-        # -- Replay buffer. -- #
+        # -- Replay buffer. If the policy expects attention-based obstacle
+        #    inputs but the provided observation_space doesn't include the
+        #    required keys, extend it so the buffer pre-allocates storage for
+        #    `obstacle_set` and `obstacle_set_mask`.
+        obs_space_for_buffer = observation_space
+        try:
+            from gymnasium import spaces as _spaces
+        except Exception:
+            _spaces = None
+
+        if getattr(self.policy_config, "use_attention_obstacles", False) and isinstance(observation_space, _spaces.Dict if _spaces is not None else dict):
+            # Only add keys if missing
+            if "obstacle_set" not in observation_space.spaces or "obstacle_set_mask" not in observation_space.spaces:
+                logger.warning(
+                    "policy_config.use_attention_obstacles=True but observation_space is missing "
+                    "'obstacle_set'/'obstacle_set_mask'; auto-extending observation_space to add them. "
+                    "This usually means the caller built observation_space from the base env instead "
+                    "of using build_observation_space_with_obstacles(); replay buffer keys were "
+                    "pre-allocated for the extended space."
+                )
+                new_spaces = dict(observation_space.spaces)
+                max_obs = int(self.policy_config.max_obstacles)
+                new_spaces["obstacle_set"] = _spaces.Box(low=-1.0, high=1.0, shape=(max_obs, int(self.policy_config.obstacle_feature_dim)), dtype=np.float32)
+                new_spaces["obstacle_set_mask"] = _spaces.Box(low=0, high=1, shape=(max_obs,), dtype=bool)
+                obs_space_for_buffer = _spaces.Dict(new_spaces)
+
         self.replay_buffer = SafeReplayBuffer(
-            observation_space,
+            obs_space_for_buffer,
             action_dim=self.action_dim,
             max_size=replay_buffer_size,
             device=self.device,
@@ -226,10 +254,14 @@ class SafeSACAgent:
             ``np.ndarray`` of shape ``(action_dim,)``, ``float32``, in the
             units defined by ``policy_config.action_bounds``.
         """
-        obs_tensors = {
-            key: torch.as_tensor(np.asarray(value), dtype=torch.float32, device=self.device).unsqueeze(0)
-            for key, value in obs.items()
-        }
+        obs_tensors = {}
+        for key, value in obs.items():
+            arr = np.asarray(value)
+            if arr.dtype == bool:
+                obs_tensors[key] = torch.as_tensor(arr, dtype=torch.bool, device=self.device).unsqueeze(0)
+            else:
+                obs_tensors[key] = torch.as_tensor(arr, dtype=torch.float32, device=self.device).unsqueeze(0)
+        
         action, _value, _log_prob = self.policy.forward(obs_tensors, deterministic=deterministic)
         return action.squeeze(0).detach().cpu().numpy().astype(np.float32)
 
