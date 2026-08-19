@@ -113,6 +113,7 @@ class AMRWarehouseEnv(gym.Env):
         self.cbf_filter: CBFSafetyFilter = build_filter_from_config()
         self.last_cbf_diagnostics: Dict[str, Any] = {
             "intervened": False, "num_active_constraints": 0, "solver_success": True,
+            "tier": "strict", "slack": 0.0,
         }
 
         # Action & Observation Spaces
@@ -164,6 +165,7 @@ class AMRWarehouseEnv(gym.Env):
         self.prev_action = np.zeros(2)
         self.last_cbf_diagnostics = {
             "intervened": False, "num_active_constraints": 0, "solver_success": True,
+            "tier": "strict", "slack": 0.0,
         }
 
         self._sample_robot()
@@ -199,6 +201,7 @@ class AMRWarehouseEnv(gym.Env):
             v_cmd, omega_cmd = v_nom, omega_nom
             self.last_cbf_diagnostics = {
                 "intervened": False, "num_active_constraints": 0, "solver_success": True,
+                "tier": "strict", "slack": 0.0,
             }
 
         # 2. Differential Kinematics with Friction/Slip
@@ -441,6 +444,12 @@ class AMRWarehouseEnv(gym.Env):
             "cbf_intervened": self.last_cbf_diagnostics["intervened"],
             "cbf_num_active_constraints": self.last_cbf_diagnostics["num_active_constraints"],
             "cbf_solver_success": self.last_cbf_diagnostics["solver_success"],
+            # Expose new diagnostics added by CBFSafetyFilter.solve()
+            "cbf_tier": self.last_cbf_diagnostics.get("tier"),
+            "cbf_slack": self.last_cbf_diagnostics.get("slack"),
+            # Backwards-compatible top-level keys for downstream scripts
+            "tier": self.last_cbf_diagnostics.get("tier"),
+            "slack": self.last_cbf_diagnostics.get("slack"),
         }
 
     # =========================================================================

@@ -20,6 +20,7 @@ import torch
 
 from environment import AMRWarehouseEnv
 from safe_sac import SafeSACAgent, SafeSACConfig
+from train_improved import augment_observation
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +186,8 @@ def run_episode(
         ``collect_frames``) ``frames``.
     """
     obs, _info = env.reset(seed=episode_seed)
+    if agent.policy_config.use_attention_obstacles:
+        obs = augment_observation(obs, env, agent.policy_config.max_obstacles)
     done = False
 
     episode_return = 0.0
@@ -203,6 +206,8 @@ def run_episode(
     while not done:
         action = agent.select_action(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
+        if agent.policy_config.use_attention_obstacles:
+            obs = augment_observation(obs, env, agent.policy_config.max_obstacles)
         done = terminated or truncated
 
         episode_return += float(reward)

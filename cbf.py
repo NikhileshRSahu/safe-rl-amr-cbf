@@ -349,8 +349,11 @@ class CBFSafetyFilter:
                 "intervened": False,
                 "num_active_constraints": 0,
                 "solver_success": True,
+                "tier": "strict",
+                "slack": 0.0,
             }
 
+        # 1) Try the strict (no-slack) QP as before
         if self.config.backend == "cvxpy":
             v_safe, omega_safe, success = self._solve_cvxpy(v_nom, omega_nom, A_list, b_list)
         else:
@@ -360,9 +363,43 @@ class CBFSafetyFilter:
         diagnostics = {
             "intervened": intervened,
             "num_active_constraints": len(A_list),
-            "solver_success": success,
+            # will update solver_success/tier below depending on outcome
         }
-        return v_safe, omega_safe, diagnostics
+
+        if success:
+            diagnostics.update({"solver_success": True, "tier": "strict", "slack": 0.0})
+            return v_safe, omega_safe, diagnostics
+
+        # 2) Strict QP failed/infeasible -> retry with a slack-relaxed QP
+        # Use project-wide slack weight from config (QP_SLACK_WEIGHT)
+        try:
+            from config import QP_SLACK_WEIGHT
+        except Exception:
+            QP_SLACK_WEIGHT = 1e6
+
+        if self.config.backend == "cvxpy":
+            v_safe_s, omega_safe_s, success_s, slack_val = self._solve_cvxpy_with_slack(
+                v_nom, omega_nom, A_list, b_list, QP_SLACK_WEIGHT
+            )
+        else:
+            v_safe_s, omega_safe_s, success_s, slack_val = self._solve_scipy_with_slack(
+                v_nom, omega_nom, A_list, b_list, QP_SLACK_WEIGHT
+            )
+
+        if success_s:
+            intervened_s = (abs(v_safe_s - v_nom) > 1e-6) or (abs(omega_safe_s - omega_nom) > 1e-6)
+            diagnostics.update({
+                "intervened": intervened_s,
+                "solver_success": True,
+                "tier": "slack",
+                "slack": float(slack_val),
+            })
+            return v_safe_s, omega_safe_s, diagnostics
+
+        # 3) Slack-relaxed QP also failed — fall back to configured infeasible fallback
+        fb_v, fb_omega = self.config.infeasible_fallback
+        diagnostics.update({"solver_success": False, "tier": "hard_stop", "slack": None})
+        return fb_v, fb_omega, diagnostics
 
     def _solve_scipy(
         self, v_nom: float, omega_nom: float, A_list: List[np.ndarray], b_list: List[float]
@@ -395,6 +432,93 @@ class CBFSafetyFilter:
         # degrade more gracefully than a full stop.
         fb_v, fb_omega = cfg.infeasible_fallback
         return fb_v, fb_omega, False
+
+    def _solve_scipy_with_slack(
+        self,
+        v_nom: float,
+        omega_nom: float,
+        A_list: List[np.ndarray],
+        b_list: List[float],
+        slack_weight: float,
+    ) -> Tuple[float, float, bool, float]:
+        """SLSQP QP with single scalar slack delta >= 0.
+
+        Returns (v, omega, success, delta_value).
+        """
+        cfg = self.config
+        u_nom = np.array([v_nom, omega_nom])
+        A_mat = np.array(A_list)
+        b_vec = np.array(b_list)
+
+        # decision vars: [v, omega, delta]
+        x0 = np.array([v_nom, omega_nom, 0.0])
+
+        def objective(x: np.ndarray) -> float:
+            u = x[:2]
+            delta = x[2]
+            return 0.5 * np.sum((u - u_nom) ** 2) + float(slack_weight) * (delta ** 2)
+
+        def constraint(x: np.ndarray) -> np.ndarray:
+            u = x[:2]
+            delta = x[2]
+            # b - A u + delta >= 0  <=>  delta + b_vec - A_mat @ u >= 0
+            return b_vec + delta - np.dot(A_mat, u)
+
+        bounds = (cfg.v_bounds, cfg.omega_bounds, (0.0, None))
+        cons = {"type": "ineq", "fun": constraint}
+
+        res = opt.minimize(
+            objective, x0, method="SLSQP", bounds=bounds, constraints=cons,
+            options={"maxiter": cfg.max_iter, "ftol": 1e-3},
+        )
+
+        if res.success:
+            return float(res.x[0]), float(res.x[1]), True, float(max(0.0, res.x[2]))
+        fb_v, fb_omega = cfg.infeasible_fallback
+        return fb_v, fb_omega, False, 0.0
+
+    def _solve_cvxpy_with_slack(
+        self,
+        v_nom: float,
+        omega_nom: float,
+        A_list: List[np.ndarray],
+        b_list: List[float],
+        slack_weight: float,
+    ) -> Tuple[float, float, bool, float]:
+        """CVXPY + OSQP QP with single scalar slack delta >= 0.
+
+        Returns (v, omega, success, delta_value).
+        """
+        if not _CVXPY_AVAILABLE:  # defensive
+            raise ImportError("cvxpy backend selected but cvxpy is not installed.")
+
+        cfg = self.config
+        u_nom = np.array([v_nom, omega_nom])
+        A_mat = np.array(A_list)
+        b_vec = np.array(b_list)
+
+        u = cp.Variable(2)
+        delta = cp.Variable(nonneg=True)
+        objective = cp.Minimize(0.5 * cp.sum_squares(u - u_nom) + float(slack_weight) * cp.square(delta))
+        constraints = [
+            A_mat @ u <= b_vec + delta,
+            u[0] >= cfg.v_bounds[0], u[0] <= cfg.v_bounds[1],
+            u[1] >= cfg.omega_bounds[0], u[1] <= cfg.omega_bounds[1],
+        ]
+        problem = cp.Problem(objective, constraints)
+
+        try:
+            problem.solve(solver=cp.OSQP, max_iter=cfg.max_iter)
+        except cp.error.SolverError:
+            fb_v, fb_omega = cfg.infeasible_fallback
+            return fb_v, fb_omega, False, 0.0
+
+        if u.value is None or problem.status not in ("optimal", "optimal_inaccurate"):
+            fb_v, fb_omega = cfg.infeasible_fallback
+            return fb_v, fb_omega, False, 0.0
+
+        delta_val = float(delta.value) if delta.value is not None else 0.0
+        return float(u.value[0]), float(u.value[1]), True, max(0.0, delta_val)
 
     def _solve_cvxpy(
         self, v_nom: float, omega_nom: float, A_list: List[np.ndarray], b_list: List[float]

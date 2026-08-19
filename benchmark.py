@@ -378,10 +378,9 @@ def plot_comparison(all_summaries: List[Dict[str, Any]], output_dir: Path) -> No
     ax = axes[1, 1]
     bars = ax.bar(algorithms, mean_efficiencies, color="goldenrod", edgecolor="black")
     ax.set_ylabel("Path Efficiency")
-    ax.set_ylim(0, 1.1)
     ax.set_title("Path Efficiency (higher is better)")
     for bar, val in zip(bars, mean_efficiencies):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(0.01, 0.02 * max(mean_efficiencies)),
                 f"{val:.3f}", ha="center", va="bottom", fontsize=9)
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right")
 
