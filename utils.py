@@ -351,34 +351,77 @@ def barrier_gradient(robot_position: Point2D, obstacle_position: Point2D) -> np.
 
 
 def compute_lie_derivatives(
-    robot_pose: Pose3D, 
-    obs_state: Sequence[float]
+    robot_pose: Pose3D,
+    obs_state: Sequence[float],
+    lookahead_distance: float = 0.0,
 ) -> Tuple[float, np.ndarray]:
-    """
-    Compute Lie derivatives Lf_h and Lg_h for the Unicycle CBF formulation.
-    Assuming h(x) = ||p_r - p_o||^2 - R^2, with dynamic obstacles.
-    
-    Returns
-    -------
-    Tuple[float, np.ndarray]
-        Lf_h (scalar drift) and Lg_h (1x2 control coefficient array for [v, w]).
+    """Compute Lie derivatives Lf_h and Lg_h for the unicycle CBF formulation.
+
+    Uses a **lookahead-point barrier** when ``lookahead_distance > 0``.  The
+    barrier is evaluated at::
+
+        p_L = [rx + L·cos(θ),  ry + L·sin(θ)]
+
+    instead of the robot centre.  The time derivative of p_L is::
+
+        ṗ_Lx = cos(θ)·v  −  L·sin(θ)·ω
+        ṗ_Ly = sin(θ)·v  +  L·cos(θ)·ω
+
+    which means both v *and* ω appear in Lg_h — giving the CBF-QP direct
+    authority over angular velocity without a full second-order HOCBF.
+    When ``lookahead_distance == 0`` the function reduces to the original
+    robot-centre formulation (Lg_h[1] = 0, ω unconstrained).
+
+    Args:
+        robot_pose: ``[x, y, theta, ...]`` — at least 3 elements.
+        obs_state: ``[ox, oy, obs_theta, obs_speed, ...]``.
+        lookahead_distance: Distance L (m) of the lookahead point ahead of
+            the robot along its heading.  ``0`` → classic robot-centre CBF.
+
+    Returns:
+        ``(Lf_h, Lg_h)`` where ``Lf_h`` is a scalar and ``Lg_h`` is a
+        ``(2,)`` array for ``[v, ω]``.
     """
     rx, ry, theta = robot_pose[0], robot_pose[1], robot_pose[2]
     ox, oy, obs_theta, obs_v = obs_state[0], obs_state[1], obs_state[2], obs_state[3]
-    
-    # Obstacle velocity vector
+
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    L = float(lookahead_distance)
+
+    # Lookahead point (equals robot centre when L == 0).
+    pLx = rx + L * cos_t
+    pLy = ry + L * sin_t
+
+    # Obstacle velocity.
     vox = obs_v * math.cos(obs_theta)
     voy = obs_v * math.sin(obs_theta)
-    
-    dh_dx = 2 * (rx - ox)
-    dh_dy = 2 * (ry - oy)
-    
-    # Drift derivative Lf_h (only obstacle movement contributes since robot drift f(x) for pos is 0 under v=0)
+
+    # Barrier gradient ∇h w.r.t. the lookahead point.
+    dh_dx = 2.0 * (pLx - ox)
+    dh_dy = 2.0 * (pLy - oy)
+
+    # Lf_h: drift term — robot drift f(x) is zero for position in the
+    # control-affine unicycle model; only obstacle motion contributes.
     Lf_h = dh_dx * (-vox) + dh_dy * (-voy)
-    
-    # Control derivative Lg_h = \nabla h * G(x). For unicycle, [v*cos(theta), v*sin(theta)].
-    Lg_h = np.array([dh_dx * math.cos(theta) + dh_dy * math.sin(theta), 0.0])
-    
+
+    # Lg_h = ∇h · G_L(x) where G_L is the control Jacobian of p_L w.r.t. [v, ω]:
+    #   ∂pLx/∂v  = cos(θ),     ∂pLx/∂ω = −L·sin(θ)
+    #   ∂pLy/∂v  = sin(θ),     ∂pLy/∂ω =  L·cos(θ)
+    Lg_h_v = dh_dx * cos_t + dh_dy * sin_t
+    Lg_h_w = dh_dx * (-L * sin_t) + dh_dy * (L * cos_t)
+    Lg_h = np.array([Lg_h_v, Lg_h_w], dtype=np.float64)
+
+    # --- Singular guard ----------------------------------------------------- #
+    # When the lookahead point coincides with the obstacle (h ≈ −R²), the
+    # gradient vanishes and the constraint becomes trivially satisfiable by
+    # any action.  In that degenerate case we emit a maximally conservative
+    # constraint that forces the QP to stop the robot.
+    if math.hypot(Lg_h_v, Lg_h_w) < 1e-8:
+        # Override with a v-stop constraint: Lf_h set very negative so the
+        # right-hand side forces v → 0.
+        Lg_h = np.array([1.0, 0.0], dtype=np.float64)
+        Lf_h = -1e3
+
     return float(Lf_h), Lg_h
 
 
@@ -438,16 +481,33 @@ def predict_trajectory(obstacle_state: Sequence[float], horizon: int, dt: float)
     return np.column_stack((traj_x, traj_y))
 
 
-def bounce_from_wall(obstacle_state: Sequence[float], bounds: RectBounds = (MAP_MIN_X, MAP_MAX_X, MAP_MIN_Y, MAP_MAX_Y)) -> np.ndarray:
-    """Apply elastic collision reflection to dynamic obstacles hitting map boundaries."""
+def bounce_from_wall(
+    obstacle_state: Sequence[float],
+    bounds: RectBounds = (MAP_MIN_X, MAP_MIN_Y, MAP_MAX_X, MAP_MAX_Y),
+) -> np.ndarray:
+    """Apply elastic collision reflection to dynamic obstacles hitting map boundaries.
+
+    Args:
+        obstacle_state: ``[x, y, theta, v]``.
+        bounds: ``(xmin, ymin, xmax, ymax)`` — follows the same ``RectBounds``
+            convention used everywhere else in this module.
+
+    .. note::
+        Previous default was ``(MAP_MIN_X, MAP_MAX_X, MAP_MIN_Y, MAP_MAX_Y)``
+        which destructured into ``xmin=MAP_MIN_X, xmax=MAP_MAX_X,
+        ymin=MAP_MIN_Y, ymax=MAP_MAX_Y`` — matching the intended semantics
+        only by coincidence.  The default is now the canonical
+        ``(xmin, ymin, xmax, ymax)`` order consistent with :data:`SHELVES`
+        and :func:`closest_point_on_rectangle`.
+    """
     x, y, theta, v = obstacle_state[0], obstacle_state[1], obstacle_state[2], obstacle_state[3]
-    xmin, xmax, ymin, ymax = bounds
-    
+    xmin, ymin, xmax, ymax = bounds  # canonical (xmin,ymin,xmax,ymax)
+
     if x <= xmin or x >= xmax:
         theta = normalize_angle(math.pi - theta)
     if y <= ymin or y >= ymax:
         theta = normalize_angle(-theta)
-        
+
     return np.array([clamp(x, xmin, xmax), clamp(y, ymin, ymax), theta, v], dtype=np.float64)
 
 # ... [Geometry Collisions, Random Sampling, Warehouse bounds remain identical to previous implementation block] ...

@@ -42,6 +42,7 @@ class SafeReplayBuffer:
         action_dim: int,
         max_size: int = 1_000_000,
         device: Union[str, torch.device] = "cpu",
+        seed: Optional[int] = None,
     ) -> None:
         """Initializes the buffer and pre-allocates all storage arrays.
 
@@ -51,6 +52,7 @@ class SafeReplayBuffer:
             action_dim: Dimensionality of the action vector (e.g., 2 for [v, omega]).
             max_size: Ring-buffer capacity (number of transitions).
             device: Torch device (e.g., "cpu" or "cuda") that `sample()` returns tensors on.
+            seed: Optional RNG seed for deterministic sampling.
 
         Raises:
             ValueError: If `action_dim` or `max_size` are not positive integers.
@@ -61,6 +63,7 @@ class SafeReplayBuffer:
         self.action_dim = action_dim
         self.max_size = int(max_size)
         self.device = torch.device(device) if isinstance(device, str) else device
+        self.rng = np.random.default_rng(seed)
 
         self.ptr: int = 0
         self.size: int = 0
@@ -171,7 +174,7 @@ class SafeReplayBuffer:
         if batch_size > self.size:
             raise ValueError(f"Requested {batch_size} but buffer only holds {self.size}.")
 
-        idx = np.random.randint(0, self.size, size=batch_size)
+        idx = self.rng.integers(0, self.size, size=batch_size)
 
         # Batch structural dicts directly to PyTorch tensors on the correct device
         obs_batch = {

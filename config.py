@@ -1,9 +1,9 @@
 """
-Configuration module for Safe Reinforcement Learning Autonomous Mobile Robot (AMR).
+Global configuration for the AMR Safe RL environment and CBF filter.
 
-This module defines all physical, dynamic, safety, environment, observation,
-visualization, and training hyperparameters for a 20x20m warehouse AMR controlled
-via Proximal Policy Optimization (PPO) filtered by Control Barrier Functions (CBF).
+Contains physical constants, RL hyperparameters, and safety filter bounds
+used across the hybrid SAC + CBF architecture. All distance units are in
+metres (m) and angles in radians (rad) unless otherwise specified.
 
 Mathematical Formulation
 ------------------------
@@ -256,6 +256,7 @@ class CBFConfig:
 
     SAFETY_MARGIN: float = 0.15
     GAMMA: float = 2.0
+    LOOKAHEAD_DISTANCE: float = 0.25
     HOCBF_GAMMA1: float = 3.0
     HOCBF_GAMMA2: float = 3.0
     SLACK_WEIGHT: float = 1e6
@@ -301,6 +302,10 @@ class RewardConfig:
 class PPOConfig:
     """
     Hyperparameters for Stable-Baselines3 Proximal Policy Optimization (PPO).
+
+    .. deprecated::
+        This class is dead code. The implementation uses SAC (`SafeSACConfig`
+        in `safe_sac.py`). These values are ignored by the training loops.
 
     Attributes
     ----------
@@ -420,6 +425,7 @@ TOTAL_OBS_DIM: Final[int] = OBS_CONFIG.TOTAL_OBS_DIM
 
 CBF_SAFETY_MARGIN: Final[float] = CBF_CONFIG.SAFETY_MARGIN
 CBF_GAMMA: Final[float] = CBF_CONFIG.GAMMA
+LOOKAHEAD_DISTANCE: Final[float] = CBF_CONFIG.LOOKAHEAD_DISTANCE
 QP_SLACK_WEIGHT: Final[float] = CBF_CONFIG.SLACK_WEIGHT
 
 TOTAL_TIMESTEPS: Final[int] = PPO_CONFIG.TOTAL_TIMESTEPS

@@ -298,9 +298,13 @@ class AMRWarehouseEnv(gym.Env):
             
             dist_to_goal = math.hypot(gx - ox, gy - oy)
             if dist_to_goal < 1.0:
-                try: gx, gy = random_goal_pose(rng=self.np_random, robot_pos=(ox, oy), shelves=SHELVES)
-                except RuntimeError: pass
+                try: 
+                    gx, gy = random_goal_pose(rng=self.np_random, robot_pos=(ox, oy), shelves=SHELVES)
+                    dist_to_goal = math.hypot(gx - ox, gy - oy)
+                except RuntimeError: 
+                    pass
 
+            dist_to_goal = max(dist_to_goal, 1e-6)
             dir_x, dir_y = (gx - ox) / dist_to_goal, (gy - oy) / dist_to_goal
             f_goal_x = (dir_x * DESIRED_SPEED - ospeed * math.cos(otheta)) / RELAX_TIME
             f_goal_y = (dir_y * DESIRED_SPEED - ospeed * math.sin(otheta)) / RELAX_TIME
@@ -389,7 +393,7 @@ class AMRWarehouseEnv(gym.Env):
             normalize_observation(rx, MAP_MIN_X, MAP_MAX_X),
             normalize_observation(ry, MAP_MIN_Y, MAP_MAX_Y),
             theta / math.pi,
-            normalize_observation(self.actual_v, V_MIN, V_MAX),
+            clamp(normalize_observation(self.actual_v, V_MIN, V_MAX), -1.0, 1.0),
             clamp(self.actual_omega / OMEGA_MAX, -1.0, 1.0),
         ], dtype=np.float32)
 
@@ -403,11 +407,16 @@ class AMRWarehouseEnv(gym.Env):
 
         lidar_obs = np.concatenate(list(self.lidar_history)).astype(np.float32)
 
-        return {
+        obs_dict = {
             "robot_state": robot_obs,
             "goal": goal_obs,
             "lidar": lidar_obs,
         }
+        
+        for k, v in obs_dict.items():
+            obs_dict[k] = np.nan_to_num(v, nan=0.0, posinf=1.0, neginf=-1.0)
+            
+        return obs_dict
 
     def _calculate_reward(self, is_goal: bool, is_collision: bool, action: np.ndarray) -> Tuple[float, Dict[str, float]]:
         breakdown = {k: 0.0 for k in ["r_progress", "r_goal", "r_collision", "r_time", "r_heading", "r_energy", "r_oscillation", "r_deadlock", "r_safety"]}

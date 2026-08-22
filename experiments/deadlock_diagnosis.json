@@ -1,0 +1,188 @@
+[
+  {
+    "episode": 0,
+    "deadlock_samples": [
+      {
+        "step": 40,
+        "robot_xy": [
+          -9.558505361983752,
+          -7.685650382317532
+        ],
+        "u_nom": [
+          0.03290826827287674,
+          -0.021657126024365425
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.025017009187185815
+      },
+      {
+        "step": 41,
+        "robot_xy": [
+          -9.573926406152443,
+          -7.64286154166889
+        ],
+        "u_nom": [
+          0.03315382078289986,
+          -0.021831655874848366
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.051711830688493825
+      },
+      {
+        "step": 42,
+        "robot_xy": [
+          -9.589911709026689,
+          -7.599585639477495
+        ],
+        "u_nom": [
+          0.033370401710271835,
+          -0.021876664832234383
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.07830285618790739
+      }
+    ]
+  },
+  {
+    "episode": 1,
+    "deadlock_samples": [
+      {
+        "step": 8,
+        "robot_xy": [
+          -6.788830453111534,
+          8.418303807606424
+        ],
+        "u_nom": [
+          0.03394865617156029,
+          -0.021047456189990044
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.08156648034266038
+      },
+      {
+        "step": 9,
+        "robot_xy": [
+          -6.7720647994336325,
+          8.37453317092181
+        ],
+        "u_nom": [
+          0.034028686583042145,
+          -0.02116641402244568
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.1483035940924797
+      },
+      {
+        "step": 10,
+        "robot_xy": [
+          -6.755573679615027,
+          8.33075008554656
+        ],
+        "u_nom": [
+          0.03410899266600609,
+          -0.02122335322201252
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.20734750065807747
+      }
+    ]
+  },
+  {
+    "episode": 2,
+    "deadlock_samples": [
+      {
+        "step": 22,
+        "robot_xy": [
+          -5.9229205553982505,
+          -9.581061027778746
+        ],
+        "u_nom": [
+          0.03400833532214165,
+          -0.021392419934272766
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.08220083068586768
+      },
+      {
+        "step": 23,
+        "robot_xy": [
+          -5.916579946967136,
+          -9.62642908034709
+        ],
+        "u_nom": [
+          0.03373744711279869,
+          -0.021371489390730858
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.15082983198309138
+      },
+      {
+        "step": 24,
+        "robot_xy": [
+          -5.90992393965795,
+          -9.671850086135178
+        ],
+        "u_nom": [
+          0.03407933935523033,
+          -0.021619325503706932
+        ],
+        "u_safe": [
+          0.0,
+          0.0
+        ],
+        "num_active_constraints": 1,
+        "max_pairwise_angle_deg": 0.0,
+        "opposing_pair_count": 0,
+        "tightest_constraint_slack": -0.21175422080484801
+      }
+    ]
+  }
+]

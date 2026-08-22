@@ -20,7 +20,6 @@ import torch
 
 from environment import AMRWarehouseEnv
 from safe_sac import SafeSACAgent, SafeSACConfig
-from train_improved import augment_observation
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +137,52 @@ def load_agent(
 # --------------------------------------------------------------------------- #
 # Optional video saving
 # --------------------------------------------------------------------------- #
+
+import math
+
+def augment_observation(
+    obs: Dict[str, np.ndarray],
+    env: AMRWarehouseEnv,
+    max_obstacles: int,
+) -> Dict[str, np.ndarray]:
+    """Add a structured obstacle_set observation for the attention encoder.
+
+    Features per obstacle: [rel_x, rel_y, rel_vx, rel_vy, radius] in robot frame.
+    """
+    rx, ry, theta = env.robot_state[0], env.robot_state[1], env.robot_state[2]
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+
+    obstacle_set = np.zeros((max_obstacles, 5), dtype=np.float32)
+    mask = np.zeros(max_obstacles, dtype=bool)
+
+    num_active = int(min(len(env.dynamic_obstacles), max_obstacles))
+    for i in range(num_active):
+        obs_i = env.dynamic_obstacles[i]
+        ox, oy = obs_i[0], obs_i[1]
+        otheta, ospeed = obs_i[2], obs_i[3]
+
+        # Relative position in world frame
+        dx_world = ox - rx
+        dy_world = oy - ry
+
+        # Transform to robot frame
+        rel_x = cos_t * dx_world + sin_t * dy_world
+        rel_y = -sin_t * dx_world + cos_t * dy_world
+
+        # Relative velocity in robot frame (approximate)
+        vox = ospeed * math.cos(otheta)
+        voy = ospeed * math.sin(otheta)
+        rel_vx = cos_t * vox + sin_t * voy
+        rel_vy = -sin_t * vox + cos_t * voy
+
+        obstacle_set[i] = [rel_x, rel_y, rel_vx, rel_vy, 0.3]
+        mask[i] = True
+
+    out = dict(obs)
+    out["obstacle_set"] = obstacle_set
+    out["obstacle_set_mask"] = mask
+    return out
+
 
 def _save_episode_gif(frames: List[np.ndarray], out_path: Path, fps: int) -> None:
     """Saves a list of RGB frames as an animated GIF, if ``imageio`` is available.
