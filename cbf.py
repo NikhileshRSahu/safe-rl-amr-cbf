@@ -32,11 +32,12 @@ Two backends are supported behind the same public interface:
       specified. This backend is optional and import-guarded: if
       ``cvxpy``/``osqp`` are not installed, constructing a filter with
       ``backend="cvxpy"`` raises a clear ``ImportError`` at construction
-      time rather than failing silently or crashing training mid-run.
+      time rather than failing silently or crashing training mid-run. The formulation strictly bounds worst-case erosion of the safety margin.
 
-No slack variable is implemented in either backend (matching the
-project's deliberate choice to keep a hard-stop fallback for the
-baseline). If the QP is infeasible, ``solve()`` returns ``(0.0, 0.0)``
+A bounded slack variable is implemented in both the `scipy` and `cvxpy` backends 
+(when `enable_slack=True`). When slack is exhausted or the QP is irrecoverably 
+infeasible (e.g. robot completely boxed in), the filter correctly falls back to a 
+hard-stop (0.0, 0.0).
 -- see ``CBFSafetyFilter.solve``'s docstring for the TODO on revisiting
 this if infeasible QPs turn out to be frequent with dense dynamic
 obstacles.
@@ -395,9 +396,8 @@ class CBFSafetyFilter:
         }
 
         if success:
-            if self.config.enable_slack:
-                diagnostics["tier"] = "strict"
-                diagnostics["slack_used"] = 0.0
+            diagnostics["tier"] = "strict"
+            diagnostics["slack_used"] = 0.0
             return v_safe, omega_safe, diagnostics
 
         if self.config.enable_slack:
@@ -413,9 +413,8 @@ class CBFSafetyFilter:
                 diagnostics["slack_used"] = delta_used
                 return v_safe_s, omega_safe_s, diagnostics
 
-        if self.config.enable_slack:
-            diagnostics["tier"] = "hard_stop"
-            diagnostics["slack_used"] = None
+        diagnostics["tier"] = "hard_stop"
+        diagnostics["slack_used"] = None
 
         return v_safe, omega_safe, diagnostics
 
