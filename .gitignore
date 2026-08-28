@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training logs
+runs/
+logs/
+checkpoints/
+
+# Large models
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# TensorBoard
+events.out.tfevents.*
+
+# Temporary evaluations
+trajectory_eval_*/
+final_eval_*/
+unseen200*/
+rl_gate_*/
+rl_mpc/
+rl_macrorec/
+rl_hybridrec/
+rl_clf_*/
+rl_oldfast/
+rl_ttcgate/
+
+# Generated plots / temporary data
+*.tmp
+*.log
+
+# Video
+*.mp4
+*.avi
+*.mov
