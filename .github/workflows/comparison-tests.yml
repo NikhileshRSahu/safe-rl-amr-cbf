@@ -1,0 +1,38 @@
+name: Aegis comparison tests
+
+on:
+  pull_request:
+    paths:
+      - "classical_baseline.py"
+      - "compare_controllers.py"
+      - "tests/test_classical_baseline.py"
+      - "tests/test_compare_controllers.py"
+      - "requirements.txt"
+      - ".github/workflows/comparison-tests.yml"
+  push:
+    branches:
+      - "feature/aegis-vs-astar-dwa"
+    paths:
+      - "classical_baseline.py"
+      - "compare_controllers.py"
+      - "tests/test_classical_baseline.py"
+      - "tests/test_compare_controllers.py"
+      - "requirements.txt"
+      - ".github/workflows/comparison-tests.yml"
+
+jobs:
+  comparison-unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.24,<2.0" "matplotlib>=3.7" "imageio>=2.31" "pytest>=8.0"
+      - name: Run Aegis comparison tests
+        run: |
+          python -m pytest -q tests/test_classical_baseline.py tests/test_compare_controllers.py
