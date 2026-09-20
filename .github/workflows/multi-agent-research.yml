@@ -32,7 +32,7 @@ jobs:
       - name: Run multi-agent training and held-out evaluation
         run: |
           python benchmark/train_multi_agent_research.py \
-            --agent-steps 50000 \
+            --agent-steps 250000 \
             --seed 52 \
             --out results/multi_agent_run
       - name: Upload research outputs
