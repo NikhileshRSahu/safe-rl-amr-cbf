@@ -9,7 +9,7 @@ from torch.optim import Adam
 from cbf import CBFFilterConfig, CBFSafetyFilter
 
 DT=0.1; WORLD=10.0; ROBOT_R=0.30; VMAX=1.0; WMAX=1.5
-SAFE_MARGIN=0.35; N_AMR_SLOTS=7; N_HUMAN_SLOTS=8; GOAL_TOL=0.45
+SAFE_MARGIN=0.35; N_AMR_SLOTS=5; N_HUMAN_SLOTS=4; GOAL_TOL=0.45
 OBS_DIM=5 + (N_AMR_SLOTS+N_HUMAN_SLOTS)*6 + 8
 ACT_DIM=2
 SHELVES=[
@@ -300,11 +300,15 @@ def main():
     ao=Adam(actor.parameters(),2e-4);qo=Adam(list(q1.parameters())+list(q2.parameters()),3e-4);buf=Replay()
     gamma=.99;alpha=.08;tau=.01;global_steps=0
     stages=[1,2,4,6]
-    per=max(1,args.agent_steps//sum(stages))
+    # Explicit curriculum budget: easy cases establish navigation, then most
+    # learning is spent on the high-density 4/6-AMR regimes.
+    stage_weights={1:.08,2:.12,4:.25,6:.55}
+    stage_budgets={n:max(n,int(args.agent_steps*stage_weights[n])//n*n) for n in stages}
     logs=[]
     for n in stages:
         e=World(n,max(3,n+2),args.seed+100+n);s=e.reset();stage_agent_steps=0
-        while stage_agent_steps<per*n:
+        target_agent_steps=stage_budgets[n]
+        while stage_agent_steps<target_agent_steps:
             if buf.n<1000: acts=np.asarray([e.expert(i) if not e.done[i] else [-1,0] for i in range(n)],np.float32)
             else:
                 with torch.no_grad(): acts=actor.sample(torch.tensor(np.asarray(s),dtype=torch.float32))[0].numpy()
@@ -323,7 +327,7 @@ def main():
                     for p,tp in zip(q2.parameters(),tq2.parameters()):tp.mul_(1-tau).add_(tau*p)
         ev=eval_actor(actor,n,range(900+n*10,905+n*10),True);logs.append(dict(stage=n,eval=ev))
         print("stage",n,ev,flush=True)
-    torch.save({"actor":actor.state_dict(),"obs_dim":OBS_DIM,"observation_version":"typed_slots_relvel_v1","seed":args.seed},out/"shared_sac_cbf.pt")
+    torch.save({"actor":actor.state_dict(),"obs_dim":OBS_DIM,"observation_version":"compact_typed_slots_relvel_v2","seed":args.seed},out/"shared_sac_cbf.pt")
     final_cbf={str(n):eval_actor(actor,n,range(1200+n*100,1210+n*100),True) for n in stages}
     final_sac={str(n):eval_actor(actor,n,range(1200+n*100,1210+n*100),False) for n in stages}
     agg={}
@@ -337,7 +341,7 @@ def main():
                 "mean_deadlock":float(np.mean([r["deadlock"] for r in rows])),
                 "mean_intervention_delta":float(np.mean([r["intervention_delta"] for r in rows])),
                 "min_clearance":float(np.min([r["min_clearance"] for r in rows if r["min_clearance"] is not None])) if any(r["min_clearance"] is not None for r in rows) else None}
-    result={"agent_steps":global_steps,"reward_version":"liveness_v1","observation_version":"typed_slots_relvel_v1","stages":logs,"aggregate":agg}
+    result={"agent_steps":global_steps,"reward_version":"liveness_v1","observation_version":"compact_typed_slots_relvel_v2","stage_budgets":stage_budgets,"stages":logs,"aggregate":agg}
     (out/"summary.json").write_text(json.dumps(result,indent=2))
     print(json.dumps(agg,indent=2),flush=True)
 
