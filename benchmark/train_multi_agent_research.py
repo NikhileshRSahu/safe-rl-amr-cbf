@@ -70,20 +70,32 @@ class World:
         base=[clip(float(bx)/20,-1,1),clip(float(by)/20,-1,1),clip(float(np.linalg.norm(d))/20,0,1),
               wrap(math.atan2(float(d[1]),float(d[0]))-float(self.th[i]))/math.pi,
               float(self.priority[i])]
-        ents=[]
+        ego_vel=np.array([math.cos(float(self.th[i]))*self.v[i],math.sin(float(self.th[i]))*self.v[i]],np.float32)
+
+        # Reserve slots by entity type so pedestrians can never hide another
+        # controlled AMR from the policy at high fleet density.
+        amrs=[]
         for j in range(self.n):
             if j==i or self.done[j]: continue
             vel=np.array([math.cos(float(self.th[j]))*self.v[j],math.sin(float(self.th[j]))*self.v[j]],np.float32)
-            ents.append((self.p[j],vel,1.0))
-        for j in range(self.nppl): ents.append((self.hp[j],self.hv[j],0.0))
-        ents.sort(key=lambda z: float(np.linalg.norm(z[0]-self.p[i])))
-        ef=[]
-        for pos,vel,typ in ents[:N_NEAR]:
-            r=pos-self.p[i]; rx=c*r[0]-s*r[1]; ry=s*r[0]+c*r[1]
-            rvx=c*vel[0]-s*vel[1]; rvy=s*vel[0]+c*vel[1]
-            ef += [clip(float(rx)/6,-1,1),clip(float(ry)/6,-1,1),clip(float(rvx),-1,1),clip(float(rvy),-1,1),
-                   clip(float(np.linalg.norm(r))/6,0,1),typ]
-        ef += [0.0]*(N_NEAR*6-len(ef))
+            amrs.append((self.p[j],vel,1.0))
+        humans=[(self.hp[j],self.hv[j],0.0) for j in range(self.nppl)]
+        amrs.sort(key=lambda z: float(np.linalg.norm(z[0]-self.p[i])))
+        humans.sort(key=lambda z: float(np.linalg.norm(z[0]-self.p[i])))
+
+        def encode_group(group,nslots):
+            out=[]
+            for pos,vel,typ in group[:nslots]:
+                r=pos-self.p[i]; rx=c*r[0]-s*r[1]; ry=s*r[0]+c*r[1]
+                relv=vel-ego_vel
+                rvx=c*relv[0]-s*relv[1]; rvy=s*relv[0]+c*relv[1]
+                out += [clip(float(rx)/6,-1,1),clip(float(ry)/6,-1,1),
+                        clip(float(rvx)/2,-1,1),clip(float(rvy)/2,-1,1),
+                        clip(float(np.linalg.norm(r))/6,0,1),typ]
+            out += [0.0]*(nslots*6-len(out))
+            return out
+
+        ef=encode_group(amrs,N_AMR_SLOTS)+encode_group(humans,N_HUMAN_SLOTS)
         rays=[self.ray(i,float(self.th[i])+k*math.pi/4) for k in range(8)]
         return np.asarray(base+ef+rays,np.float32)
     def expert(self,i):
@@ -215,32 +227,17 @@ class World:
                 self.stall[i]=0
 
             rewards[i]=12*prog-.02-.002*abs(float(new_w[i]))
-
-            # Teach the actor to stay away from the emergency zone BEFORE a
-            # binary collision happens.  This is based on physical surface
-            # clearance, not the CBF barrier value, and is capped to avoid a
-            # "stand still forever" optimum.
-            if clearance[i] < 0.45:
-                risk=(0.45-clearance[i])/0.45
-                rewards[i]-=min(.30,.18*risk*risk)
-
-            # Penalize how much the QP had to rewrite the policy action, not
-            # just the intervention event itself.  Small corrections remain
-            # cheap; large unsafe proposals are more expensive.
             if use_cbf and intervened[i]:
-                rewards[i]-=.01 + .025*float(intervention_delta_now[i])
+                rewards[i]-=.015
             if use_cbf and deadlock_now[i]:
                 rewards[i]-=.10
 
-            # Liveness shaping: increasingly penalize prolonged no-progress,
-            # but do not punish brief, necessary yielding.
+            # Liveness shaping only: brief yielding is allowed, prolonged
+            # no-progress is penalized.  We intentionally removed the
+            # clearance and intervention-magnitude rewards because the
+            # previous ablation increased 6-AMR collisions.
             if self.stall[i]>20:
                 rewards[i]-=min(.25,.005*(self.stall[i]-20))
-
-            # Small safe-progress bonus: only awarded when genuinely moving
-            # toward the goal with comfortable clearance.
-            if prog>0.003 and clearance[i]>0.35:
-                rewards[i]+=.01
 
             if collision[i]:
                 rewards[i]-=35
@@ -326,7 +323,7 @@ def main():
                     for p,tp in zip(q2.parameters(),tq2.parameters()):tp.mul_(1-tau).add_(tau*p)
         ev=eval_actor(actor,n,range(900+n*10,905+n*10),True);logs.append(dict(stage=n,eval=ev))
         print("stage",n,ev,flush=True)
-    torch.save({"actor":actor.state_dict(),"obs_dim":OBS_DIM,"seed":args.seed},out/"shared_sac_cbf.pt")
+    torch.save({"actor":actor.state_dict(),"obs_dim":OBS_DIM,"observation_version":"typed_slots_relvel_v1","seed":args.seed},out/"shared_sac_cbf.pt")
     final_cbf={str(n):eval_actor(actor,n,range(1200+n*100,1210+n*100),True) for n in stages}
     final_sac={str(n):eval_actor(actor,n,range(1200+n*100,1210+n*100),False) for n in stages}
     agg={}
@@ -340,7 +337,7 @@ def main():
                 "mean_deadlock":float(np.mean([r["deadlock"] for r in rows])),
                 "mean_intervention_delta":float(np.mean([r["intervention_delta"] for r in rows])),
                 "min_clearance":float(np.min([r["min_clearance"] for r in rows if r["min_clearance"] is not None])) if any(r["min_clearance"] is not None for r in rows) else None}
-    result={"agent_steps":global_steps,"reward_version":"clearance_v2","stages":logs,"aggregate":agg}
+    result={"agent_steps":global_steps,"reward_version":"liveness_v1","observation_version":"typed_slots_relvel_v1","stages":logs,"aggregate":agg}
     (out/"summary.json").write_text(json.dumps(result,indent=2))
     print(json.dumps(agg,indent=2),flush=True)
 
