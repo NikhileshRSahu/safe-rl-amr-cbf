@@ -29,11 +29,11 @@ jobs:
         run: |
           python -m py_compile benchmark/train_multi_agent_research.py cbf.py utils.py config.py
           python -c "from cbf import CBFFilterConfig, CBFSafetyFilter; print('CBF import OK')"
-          python -c "from benchmark.train_multi_agent_research import World, OBS_DIM; w=World(6,8,52); obs=w.reset(); assert OBS_DIM==103 and all(len(o)==OBS_DIM for o in obs); print('Env smoke OK', OBS_DIM)"
+          python -c "from benchmark.train_multi_agent_research import World, OBS_DIM; w=World(6,8,52); obs=w.reset(); assert OBS_DIM==67 and all(len(o)==OBS_DIM for o in obs); print('Env smoke OK', OBS_DIM)"
       - name: Run multi-agent training and held-out evaluation
         run: |
           python benchmark/train_multi_agent_research.py \
-            --agent-steps 250000 \
+            --agent-steps 350000 \
             --seed 52 \
             --out results/multi_agent_run
       - name: Upload research outputs
