@@ -9,8 +9,8 @@ from torch.optim import Adam
 from cbf import CBFFilterConfig, CBFSafetyFilter
 
 DT=0.1; WORLD=10.0; ROBOT_R=0.30; VMAX=1.0; WMAX=1.5
-SAFE_MARGIN=0.35; N_NEAR=8; GOAL_TOL=0.45
-OBS_DIM=5 + N_NEAR*6 + 8
+SAFE_MARGIN=0.35; N_AMR_SLOTS=7; N_HUMAN_SLOTS=8; GOAL_TOL=0.45
+OBS_DIM=5 + (N_AMR_SLOTS+N_HUMAN_SLOTS)*6 + 8
 ACT_DIM=2
 SHELVES=[
 (-8,-8,-6,-2),(-8,2,-6,8),(-3,-8,-1,-2),(-3,2,-1,8),
