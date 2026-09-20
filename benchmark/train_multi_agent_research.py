@@ -46,6 +46,8 @@ class World:
         for rank,idx in enumerate(order):
             self.priority[idx]=1.0 if self.n==1 else rank/(self.n-1)
         self.stall=np.zeros(self.n,np.int32)
+        self.min_clearance=np.full(self.n,np.inf,np.float32)
+        self.intervention_delta=np.zeros(self.n,np.float32)
         self.steps=0; self.interventions=np.zeros(self.n,np.int32); self.deadlock=np.zeros(self.n,np.int32)
         self.hp=self.rng.uniform(-7.5,7.5,(self.nppl,2)).astype(np.float32)
         ang=self.rng.uniform(-math.pi,math.pi,self.nppl); sp=self.rng.uniform(.25,.6,self.nppl)
@@ -122,6 +124,7 @@ class World:
         p0=self.p.copy(); th0=self.th.copy(); v0=self.v.copy(); w0=self.w.copy()
         cand=p0.copy(); new_th=th0.copy(); new_v=v0.copy(); new_w=w0.copy()
         intervened=np.zeros(self.n,bool); deadlock_now=np.zeros(self.n,bool)
+        intervention_delta_now=np.zeros(self.n,np.float32)
 
         def dyn_snapshot(i):
             rows=[]
@@ -147,6 +150,8 @@ class World:
                 deadlock_now[i]=bool(diag.get("deadlock_detected"))
                 if intervened[i]: self.interventions[i]+=1
                 if deadlock_now[i]: self.deadlock[i]+=1
+                intervention_delta_now[i]=math.sqrt(((vs-vnom)/max(VMAX,1e-6))**2 + ((ws-wnom)/max(WMAX,1e-6))**2)
+                self.intervention_delta[i]+=intervention_delta_now[i]
             new_th[i]=wrap(float(th0[i])+ws*DT)
             new_v[i]=vs; new_w[i]=ws
             cand[i]=p0[i]+np.array([math.cos(float(new_th[i])),math.sin(float(new_th[i]))],np.float32)*vs*DT
@@ -166,6 +171,29 @@ class World:
                 if self.done[j]: continue
                 if np.linalg.norm(cand[i]-cand[j])<2*ROBOT_R:
                     collision[i]=True; collision[j]=True
+
+        # Physical surface clearance (meters), not CBF h.  Positive means
+        # separation between bodies; zero is contact.  Reward shaping below
+        # only activates inside a short near-risk band so the agent is not
+        # rewarded for simply staying far away or freezing.
+        clearance=np.full(self.n,np.inf,np.float32)
+        for i in range(self.n):
+            if self.done[i]: continue
+            ci=min(
+                float(cand[i,0]-(-WORLD)-ROBOT_R),
+                float(WORLD-cand[i,0]-ROBOT_R),
+                float(cand[i,1]-(-WORLD)-ROBOT_R),
+                float(WORLD-cand[i,1]-ROBOT_R),
+            )
+            for rect in SHELVES:
+                ci=min(ci, self._rect_dist(cand[i],rect)-ROBOT_R)
+            for q in self.hp:
+                ci=min(ci, float(np.linalg.norm(cand[i]-q)-2*ROBOT_R))
+            for j in range(self.n):
+                if j==i or self.done[j]: continue
+                ci=min(ci, float(np.linalg.norm(cand[i]-cand[j])-2*ROBOT_R))
+            clearance[i]=ci
+            self.min_clearance[i]=min(float(self.min_clearance[i]),ci)
 
         rewards=np.zeros(self.n,np.float32); done=np.zeros(self.n,bool)
         for i in range(self.n):
@@ -187,12 +215,33 @@ class World:
                 self.stall[i]=0
 
             rewards[i]=12*prog-.02-.002*abs(float(new_w[i]))
-            if use_cbf and intervened[i]: rewards[i]-=.015
-            if use_cbf and deadlock_now[i]: rewards[i]-=.10
+
+            # Teach the actor to stay away from the emergency zone BEFORE a
+            # binary collision happens.  This is based on physical surface
+            # clearance, not the CBF barrier value, and is capped to avoid a
+            # "stand still forever" optimum.
+            if clearance[i] < 0.45:
+                risk=(0.45-clearance[i])/0.45
+                rewards[i]-=min(.30,.18*risk*risk)
+
+            # Penalize how much the QP had to rewrite the policy action, not
+            # just the intervention event itself.  Small corrections remain
+            # cheap; large unsafe proposals are more expensive.
+            if use_cbf and intervened[i]:
+                rewards[i]-=.01 + .025*float(intervention_delta_now[i])
+            if use_cbf and deadlock_now[i]:
+                rewards[i]-=.10
+
             # Liveness shaping: increasingly penalize prolonged no-progress,
             # but do not punish brief, necessary yielding.
             if self.stall[i]>20:
                 rewards[i]-=min(.25,.005*(self.stall[i]-20))
+
+            # Small safe-progress bonus: only awarded when genuinely moving
+            # toward the goal with comfortable clearance.
+            if prog>0.003 and clearance[i]>0.35:
+                rewards[i]+=.01
+
             if collision[i]:
                 rewards[i]-=35
             elif self.done[i]:
@@ -239,7 +288,10 @@ def eval_actor(actor,n,seeds,use_cbf=True):
             with torch.no_grad(): a,_=actor.sample(torch.tensor(np.asarray(s),dtype=torch.float32),True)
             s,_,d=e.step(a.numpy(),use_cbf)
             if np.all(d):break
-        suc,col=e.stats(); rows.append(dict(seed=sd,success=suc,collision=col,steps=e.steps,interventions=int(e.interventions.sum()),deadlock=int(e.deadlock.sum())))
+        suc,col=e.stats(); rows.append(dict(seed=sd,success=suc,collision=col,steps=e.steps,
+            interventions=int(e.interventions.sum()),deadlock=int(e.deadlock.sum()),
+            min_clearance=float(np.min(e.min_clearance[np.isfinite(e.min_clearance)])) if np.any(np.isfinite(e.min_clearance)) else None,
+            intervention_delta=float(e.intervention_delta.sum())))
     return rows
 
 def main():
@@ -285,8 +337,10 @@ def main():
                 "success_rate":sum(r["success"] for r in rows)/N,
                 "collision_rate":sum(r["collision"] for r in rows)/N,
                 "mean_interventions":float(np.mean([r["interventions"] for r in rows])),
-                "mean_deadlock":float(np.mean([r["deadlock"] for r in rows]))}
-    result={"agent_steps":global_steps,"stages":logs,"aggregate":agg}
+                "mean_deadlock":float(np.mean([r["deadlock"] for r in rows])),
+                "mean_intervention_delta":float(np.mean([r["intervention_delta"] for r in rows])),
+                "min_clearance":float(np.min([r["min_clearance"] for r in rows if r["min_clearance"] is not None])) if any(r["min_clearance"] is not None for r in rows) else None}
+    result={"agent_steps":global_steps,"reward_version":"clearance_v2","stages":logs,"aggregate":agg}
     (out/"summary.json").write_text(json.dumps(result,indent=2))
     print(json.dumps(agg,indent=2),flush=True)
 
