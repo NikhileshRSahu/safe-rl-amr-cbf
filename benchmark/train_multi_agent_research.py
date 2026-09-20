@@ -171,7 +171,7 @@ def eval_actor(actor,n,seeds,use_cbf=True):
     return rows
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--agent-steps",type=int,default=50000);ap.add_argument("--seed",type=int,default=52)
+    ap=argparse.ArgumentParser();ap.add_argument("--agent-steps",type=int,default=250000);ap.add_argument("--seed",type=int,default=52)
     ap.add_argument("--out",default="results/multi_agent_run");args=ap.parse_args()
     random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed);torch.set_num_threads(2)
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
