@@ -48,6 +48,9 @@ class World:
         self.stall=np.zeros(self.n,np.int32)
         self.min_clearance=np.full(self.n,np.inf,np.float32)
         self.intervention_delta=np.zeros(self.n,np.float32)
+        self.path_length=np.zeros(self.n,np.float32)
+        self.finish_step=np.full(self.n,-1,np.int32)
+        self.collision_type=np.array([""]*self.n,dtype=object)
         self.steps=0; self.interventions=np.zeros(self.n,np.int32); self.deadlock=np.zeros(self.n,np.int32)
         self.hp=self.rng.uniform(-7.5,7.5,(self.nppl,2)).astype(np.float32)
         ang=self.rng.uniform(-math.pi,math.pi,self.nppl); sp=self.rng.uniform(.25,.6,self.nppl)
@@ -172,17 +175,20 @@ class World:
         collision=np.zeros(self.n,bool)
         for i in range(self.n):
             if self.done[i]: continue
-            if self.static_collision(cand[i]): collision[i]=True
+            if self.static_collision(cand[i]):
+                collision[i]=True; self.collision_type[i]="static"
             if not collision[i]:
                 for q in self.hp:
                     if np.linalg.norm(cand[i]-q)<2*ROBOT_R:
-                        collision[i]=True; break
+                        collision[i]=True; self.collision_type[i]="human"; break
         for i in range(self.n):
             if self.done[i]: continue
             for j in range(i+1,self.n):
                 if self.done[j]: continue
                 if np.linalg.norm(cand[i]-cand[j])<2*ROBOT_R:
                     collision[i]=True; collision[j]=True
+                    if not self.collision_type[i]: self.collision_type[i]="amr_amr"
+                    if not self.collision_type[j]: self.collision_type[j]="amr_amr"
 
         # Physical surface clearance (meters), not CBF h.  Positive means
         # separation between bodies; zero is contact.  Reward shaping below
@@ -215,9 +221,12 @@ class World:
             if collision[i]:
                 self.hit[i]=True; self.done[i]=True
             else:
+                self.path_length[i]+=float(np.linalg.norm(cand[i]-self.p[i]))
                 self.p[i]=cand[i]
                 if np.linalg.norm(self.g[i]-self.p[i])<=GOAL_TOL:
                     self.done[i]=True
+            if self.done[i] and self.finish_step[i] < 0:
+                self.finish_step[i]=self.steps+1
 
             now=float(np.linalg.norm(self.g[i]-self.p[i]))
             prog=float(prev[i]-now)
