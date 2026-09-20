@@ -10,7 +10,7 @@ from cbf import CBFFilterConfig, CBFSafetyFilter
 
 DT=0.1; WORLD=10.0; ROBOT_R=0.30; VMAX=1.0; WMAX=1.5
 SAFE_MARGIN=0.35; N_NEAR=8; GOAL_TOL=0.45
-OBS_DIM=4 + N_NEAR*6 + 8
+OBS_DIM=5 + N_NEAR*6 + 8
 ACT_DIM=2
 SHELVES=[
 (-8,-8,-6,-2),(-8,2,-6,8),(-3,-8,-1,-2),(-3,2,-1,8),
@@ -39,6 +39,13 @@ class World:
         self.th=np.array([math.atan2(self.g[i,1]-self.p[i,1],self.g[i,0]-self.p[i,0]) for i in range(self.n)],np.float32)
         self.v=np.zeros(self.n,np.float32); self.w=np.zeros(self.n,np.float32)
         self.done=np.zeros(self.n,bool); self.hit=np.zeros(self.n,bool)
+        # Episode-specific right-of-way ordering breaks shared-policy symmetry
+        # without giving any agent a permanently privileged identity.
+        order=self.rng.permutation(self.n)
+        self.priority=np.zeros(self.n,np.float32)
+        for rank,idx in enumerate(order):
+            self.priority[idx]=1.0 if self.n==1 else rank/(self.n-1)
+        self.stall=np.zeros(self.n,np.int32)
         self.steps=0; self.interventions=np.zeros(self.n,np.int32); self.deadlock=np.zeros(self.n,np.int32)
         self.hp=self.rng.uniform(-7.5,7.5,(self.nppl,2)).astype(np.float32)
         ang=self.rng.uniform(-math.pi,math.pi,self.nppl); sp=self.rng.uniform(.25,.6,self.nppl)
@@ -59,7 +66,8 @@ class World:
         d=self.g[i]-self.p[i]; c=math.cos(-float(self.th[i])); s=math.sin(-float(self.th[i]))
         bx=c*d[0]-s*d[1]; by=s*d[0]+c*d[1]
         base=[clip(float(bx)/20,-1,1),clip(float(by)/20,-1,1),clip(float(np.linalg.norm(d))/20,0,1),
-              wrap(math.atan2(float(d[1]),float(d[0]))-float(self.th[i]))/math.pi]
+              wrap(math.atan2(float(d[1]),float(d[0]))-float(self.th[i]))/math.pi,
+              float(self.priority[i])]
         ents=[]
         for j in range(self.n):
             if j==i or self.done[j]: continue
@@ -81,7 +89,10 @@ class World:
         for j in range(self.n):
             if j==i or self.done[j]: continue
             q=self.p[i]-self.p[j]; dist=float(np.linalg.norm(q))
-            if .01<dist<1.6: desired += .9*math.copysign(1.0, wrap(desired-math.atan2(float(q[1]),float(q[0]))))
+            if .01<dist<1.6:
+                side=math.copysign(1.0, wrap(desired-math.atan2(float(q[1]),float(q[0]))))
+                yield_gain=.55 + .55*(1.0-float(self.priority[i]))
+                desired += yield_gain*side
         e=wrap(desired-float(self.th[i])); w=clip(2.2*e,-WMAX,WMAX); v=VMAX*max(.08,1-abs(e)/1.3)
         return np.array([2*v/VMAX-1,w/WMAX],np.float32)
     def dyn_array(self,i):
@@ -95,38 +106,99 @@ class World:
         return np.asarray(rows,np.float64) if rows else np.zeros((0,6),np.float64)
     def step(self,actions,use_cbf=True):
         prev=np.linalg.norm(self.g-self.p,axis=1)
+
+        # Move pedestrians once per world tick.
         self.hp += self.hv*DT
         for j in range(self.nppl):
             for k in (0,1):
-                if abs(float(self.hp[j,k]))>8.8: self.hp[j,k]=np.sign(self.hp[j,k])*8.8; self.hv[j,k]*=-1
-        rewards=np.zeros(self.n,np.float32); done=np.zeros(self.n,bool)
+                if abs(float(self.hp[j,k]))>8.8:
+                    self.hp[j,k]=np.sign(self.hp[j,k])*8.8
+                    self.hv[j,k]*=-1
+
+        # IMPORTANT: all AMRs see the same pre-step snapshot.  The old
+        # implementation updated agent 0 before filtering agent 1, creating
+        # order-dependent dynamics and an unfair source of multi-agent
+        # collisions/deadlocks.
+        p0=self.p.copy(); th0=self.th.copy(); v0=self.v.copy(); w0=self.w.copy()
+        cand=p0.copy(); new_th=th0.copy(); new_v=v0.copy(); new_w=w0.copy()
+        intervened=np.zeros(self.n,bool); deadlock_now=np.zeros(self.n,bool)
+
+        def dyn_snapshot(i):
+            rows=[]
+            for j in range(self.n):
+                if j==i or self.done[j]: continue
+                rows.append([p0[j,0],p0[j,1],th0[j],v0[j],0,0])
+            for j in range(self.nppl):
+                sp=float(np.linalg.norm(self.hv[j]))
+                oth=math.atan2(float(self.hv[j,1]),float(self.hv[j,0]))
+                rows.append([self.hp[j,0],self.hp[j,1],oth,sp,0,0])
+            return np.asarray(rows,np.float64) if rows else np.zeros((0,6),np.float64)
+
         for i in range(self.n):
-            if self.done[i]: done[i]=True; continue
-            a=np.asarray(actions[i],np.float32); vnom=(float(a[0])+1)*.5*VMAX; wnom=float(a[1])*WMAX
+            if self.done[i]: continue
+            a=np.asarray(actions[i],np.float32)
+            vnom=(float(a[0])+1)*.5*VMAX
+            wnom=float(a[1])*WMAX
             vs,ws=vnom,wnom
             if use_cbf:
-                rs=[float(self.p[i,0]),float(self.p[i,1]),float(self.th[i]),float(self.v[i]),float(self.w[i])]
-                vs,ws,diag=self.cbf.solve(vnom,wnom,rs,self.dyn_array(i),SHELVES)
-                if diag.get("intervened"): self.interventions[i]+=1
-                if diag.get("deadlock_detected"): self.deadlock[i]+=1
-            self.th[i]=wrap(float(self.th[i])+ws*DT); self.v[i]=vs; self.w[i]=ws
-            cand=self.p[i]+np.array([math.cos(float(self.th[i])),math.sin(float(self.th[i]))],np.float32)*vs*DT
-            coll=self.static_collision(cand)
-            if not coll:
-                for j in range(self.n):
-                    if j!=i and not self.done[j] and np.linalg.norm(cand-self.p[j])<2*ROBOT_R: coll=True; break
-            if not coll:
+                rs=[float(p0[i,0]),float(p0[i,1]),float(th0[i]),float(v0[i]),float(w0[i])]
+                vs,ws,diag=self.cbf.solve(vnom,wnom,rs,dyn_snapshot(i),SHELVES)
+                intervened[i]=bool(diag.get("intervened"))
+                deadlock_now[i]=bool(diag.get("deadlock_detected"))
+                if intervened[i]: self.interventions[i]+=1
+                if deadlock_now[i]: self.deadlock[i]+=1
+            new_th[i]=wrap(float(th0[i])+ws*DT)
+            new_v[i]=vs; new_w[i]=ws
+            cand[i]=p0[i]+np.array([math.cos(float(new_th[i])),math.sin(float(new_th[i]))],np.float32)*vs*DT
+
+        # Determine collisions on the simultaneously proposed state.
+        collision=np.zeros(self.n,bool)
+        for i in range(self.n):
+            if self.done[i]: continue
+            if self.static_collision(cand[i]): collision[i]=True
+            if not collision[i]:
                 for q in self.hp:
-                    if np.linalg.norm(cand-q)<ROBOT_R+ROBOT_R: coll=True; break
-            if coll:self.hit[i]=True; self.done[i]=True
+                    if np.linalg.norm(cand[i]-q)<2*ROBOT_R:
+                        collision[i]=True; break
+        for i in range(self.n):
+            if self.done[i]: continue
+            for j in range(i+1,self.n):
+                if self.done[j]: continue
+                if np.linalg.norm(cand[i]-cand[j])<2*ROBOT_R:
+                    collision[i]=True; collision[j]=True
+
+        rewards=np.zeros(self.n,np.float32); done=np.zeros(self.n,bool)
+        for i in range(self.n):
+            if self.done[i]:
+                done[i]=True; continue
+            self.th[i]=new_th[i]; self.v[i]=new_v[i]; self.w[i]=new_w[i]
+            if collision[i]:
+                self.hit[i]=True; self.done[i]=True
             else:
-                self.p[i]=cand
-                if np.linalg.norm(self.g[i]-self.p[i])<=GOAL_TOL:self.done[i]=True
-            now=float(np.linalg.norm(self.g[i]-self.p[i])); prog=float(prev[i]-now)
-            rewards[i]=10*prog-.02-.002*abs(ws)
-            if coll: rewards[i]-=20
-            elif self.done[i]:rewards[i]+=25
+                self.p[i]=cand[i]
+                if np.linalg.norm(self.g[i]-self.p[i])<=GOAL_TOL:
+                    self.done[i]=True
+
+            now=float(np.linalg.norm(self.g[i]-self.p[i]))
+            prog=float(prev[i]-now)
+            if prog < 0.002 and now>GOAL_TOL:
+                self.stall[i]+=1
+            else:
+                self.stall[i]=0
+
+            rewards[i]=12*prog-.02-.002*abs(float(new_w[i]))
+            if use_cbf and intervened[i]: rewards[i]-=.015
+            if use_cbf and deadlock_now[i]: rewards[i]-=.10
+            # Liveness shaping: increasingly penalize prolonged no-progress,
+            # but do not punish brief, necessary yielding.
+            if self.stall[i]>20:
+                rewards[i]-=min(.25,.005*(self.stall[i]-20))
+            if collision[i]:
+                rewards[i]-=35
+            elif self.done[i]:
+                rewards[i]+=30
             done[i]=self.done[i]
+
         self.steps+=1
         if self.steps>=600: done[:]=True
         return [self.obs(i) for i in range(self.n)],rewards,done
