@@ -1,0 +1,55 @@
+name: Thesis Multi-Agent Evaluation
+
+on:
+  push:
+    branches:
+      - research/multi-agent-sac-cbf-v1
+    paths:
+      - "benchmark/evaluate_multi_agent_thesis.py"
+      - "benchmark/train_multi_agent_research.py"
+      - ".github/workflows/thesis-eval.yml"
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy torch
+      - name: Download Run 11 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: multi-agent-sac-cbf-results
+          path: pretrained/run11
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: NikhileshRSahu/safe-rl-amr-cbf
+          run-id: 35536286822
+      - name: Smoke check
+        run: |
+          python -m py_compile benchmark/evaluate_multi_agent_thesis.py benchmark/train_multi_agent_research.py classical_baseline.py
+          test -f pretrained/run11/shared_sac_cbf.pt
+          python -c "from benchmark.train_multi_agent_research import OBS_DIM; assert OBS_DIM==67; print('OBS_DIM',OBS_DIM)"
+      - name: Run 30-seed paired evaluation
+        run: |
+          python benchmark/evaluate_multi_agent_thesis.py \
+            --checkpoint pretrained/run11/shared_sac_cbf.pt \
+            --seeds 30 \
+            --seed-base 5000 \
+            --out results/thesis_eval
+      - name: Upload thesis evaluation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thesis-multi-agent-evaluation
+          path: results/thesis_eval/
+          if-no-files-found: warn
