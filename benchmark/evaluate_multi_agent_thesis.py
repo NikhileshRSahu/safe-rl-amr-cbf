@@ -153,7 +153,7 @@ def aggregate(rows,n):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--checkpoint",required=True)
+    ap.add_argument("--checkpoint",default=None)
     ap.add_argument("--seeds",type=int,default=30)
     ap.add_argument("--seed-base",type=int,default=5000)
     ap.add_argument("--out",default="results/thesis_eval")
@@ -161,8 +161,12 @@ def main():
     ap.add_argument("--only-controller",choices=["sac_cbf","sac_actor_no_cbf","astar_vo"],default=None)
     args=ap.parse_args()
     out=Path(args.out); out.mkdir(parents=True,exist_ok=True)
-    ck=torch.load(args.checkpoint,map_location="cpu",weights_only=False)
-    actor=Actor(); actor.load_state_dict(ck["actor"]); actor.eval()
+    actor=None
+    if args.only_controller != "astar_vo":
+        if args.checkpoint is None:
+            raise ValueError("--checkpoint is required unless --only-controller astar_vo")
+        ck=torch.load(args.checkpoint,map_location="cpu",weights_only=False)
+        actor=Actor(); actor.load_state_dict(ck["actor"]); actor.eval()
     configs=[args.only_n] if args.only_n is not None else [1,2,4,6]
     all_rows=[]; summary={}
     for n in configs:
