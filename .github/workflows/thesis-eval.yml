@@ -26,23 +26,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "numpy<2.0" scipy torch
-      - name: Download Run 11 checkpoint
-        uses: actions/download-artifact@v4
-        with:
-          name: multi-agent-sac-cbf-results
-          path: pretrained/run11
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: NikhileshRSahu/safe-rl-amr-cbf
-          run-id: 35536286822
+      - name: Train exact 67D 350k research model
+        run: |
+          python benchmark/train_multi_agent_research.py \
+            --agent-steps 350000 \
+            --seed 52 \
+            --out results/thesis_train
       - name: Smoke check
         run: |
           python -m py_compile benchmark/evaluate_multi_agent_thesis.py benchmark/train_multi_agent_research.py classical_baseline.py
-          test -f pretrained/run11/shared_sac_cbf.pt
+          test -f results/thesis_train/shared_sac_cbf.pt
           python -c "from benchmark.train_multi_agent_research import OBS_DIM; assert OBS_DIM==67; print('OBS_DIM',OBS_DIM)"
       - name: Run 30-seed paired evaluation
         run: |
           python benchmark/evaluate_multi_agent_thesis.py \
-            --checkpoint pretrained/run11/shared_sac_cbf.pt \
+            --checkpoint results/thesis_train/shared_sac_cbf.pt \
             --seeds 30 \
             --seed-base 5000 \
             --out results/thesis_eval
