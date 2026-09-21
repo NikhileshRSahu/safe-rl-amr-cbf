@@ -157,20 +157,25 @@ def main():
     ap.add_argument("--seeds",type=int,default=30)
     ap.add_argument("--seed-base",type=int,default=5000)
     ap.add_argument("--out",default="results/thesis_eval")
+    ap.add_argument("--only-n",type=int,choices=[1,2,4,6],default=None)
+    ap.add_argument("--only-controller",choices=["sac_cbf","sac_actor_no_cbf","astar_vo"],default=None)
     args=ap.parse_args()
     out=Path(args.out); out.mkdir(parents=True,exist_ok=True)
     ck=torch.load(args.checkpoint,map_location="cpu",weights_only=False)
     actor=Actor(); actor.load_state_dict(ck["actor"]); actor.eval()
-    configs=[1,2,4,6]
+    configs=[args.only_n] if args.only_n is not None else [1,2,4,6]
     all_rows=[]; summary={}
     for n in configs:
         seeds=range(args.seed_base+n*100,args.seed_base+n*100+args.seeds)
         summary[str(n)]={}
-        for name,runner in [
+        runners=[
             ("sac_cbf",lambda sd:run_actor(actor,n,sd,True)),
             ("sac_actor_no_cbf",lambda sd:run_actor(actor,n,sd,False)),
             ("astar_vo",lambda sd:run_astar_vo(n,sd)),
-        ]:
+        ]
+        if args.only_controller is not None:
+            runners=[x for x in runners if x[0]==args.only_controller]
+        for name,runner in runners:
             rows=[runner(sd) for sd in seeds]
             all_rows.extend(rows)
             summary[str(n)][name]=aggregate(rows,n)
