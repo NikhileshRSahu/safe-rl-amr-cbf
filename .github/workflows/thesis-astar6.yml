@@ -1,0 +1,44 @@
+name: Missing 6-AMR AStar-VO Evaluation
+
+on:
+  push:
+    branches:
+      - research/multi-agent-sac-cbf-v1
+    paths:
+      - ".github/workflows/thesis-astar6.yml"
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy torch
+      - name: Smoke check
+        run: |
+          python -m py_compile benchmark/evaluate_multi_agent_thesis.py benchmark/train_multi_agent_research.py classical_baseline.py
+      - name: Run missing 6-AMR AStar-VO block
+        run: |
+          python benchmark/evaluate_multi_agent_thesis.py \
+            --only-n 6 \
+            --only-controller astar_vo \
+            --seeds 30 \
+            --seed-base 5000 \
+            --out results/thesis_eval_astar6
+      - name: Upload missing block
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thesis-astar6-evaluation
+          path: results/thesis_eval_astar6/
+          if-no-files-found: warn
