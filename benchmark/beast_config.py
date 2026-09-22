@@ -20,7 +20,9 @@ VALIDATION_SEEDS_BY_N = {
 }
 
 TEST_SEEDS_BY_N = {
-    2: tuple(range(5200, 5230)),
+    # Seed 5200 was exposed during a local smoke run on 2026-09-22 and is
+    # therefore retired from the untouched final test protocol.
+    2: tuple(range(5201, 5231)),
     4: tuple(range(5400, 5430)),
     6: tuple(range(5600, 5630)),
 }
