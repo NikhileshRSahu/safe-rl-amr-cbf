@@ -1,4 +1,4 @@
-name: Beast Controller Evaluation
+name: Peak AStar ORCA-DD Evaluation
 
 on:
   push:
@@ -13,7 +13,42 @@ permissions:
   actions: read
 
 jobs:
+  tune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run focused ORCA-DD tests
+        run: |
+          pytest -q             tests/test_orca_geometry.py             tests/test_dd_motion.py             tests/test_beast_classical.py             tests/test_beast_benchmark.py             tests/test_beast_scenarios.py
+
+      - name: Tune classical controller on validation seeds only
+        run: |
+          python benchmark/tune_beast_classical.py             --out results/beast_tuning             --coarse-seeds 5             --finalists 4
+
+      - name: Upload frozen tuning result
+        uses: actions/upload-artifact@v4
+        with:
+          name: beast-orca-dd-tuning
+          path: results/beast_tuning/
+          if-no-files-found: error
+
   eval:
+    needs: tune
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -27,46 +62,33 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
+      - name: Install CPU dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "numpy<2.0" scipy torch cvxpy osqp
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download frozen validation-selected config
+        uses: actions/download-artifact@v4
+        with:
+          name: beast-orca-dd-tuning
+          path: results/beast_tuning
 
       - name: Download exact Run 11 checkpoint
         run: |
           mkdir -p results/run11
-          curl -L \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip" \
-            -o /tmp/run11.zip
+          curl -L             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip"             -o /tmp/run11.zip
           unzip -q /tmp/run11.zip -d results/run11
           test -f results/run11/shared_sac_cbf.pt
+          test -f results/beast_tuning/best_config.json
 
-      - name: Smoke test strengthened classical controller
+      - name: Run exact preserved 30-seed final evaluation
         run: |
-          python - <<'PY'
-          from benchmark.train_multi_agent_research import World
-          from benchmark.beast_classical import AStarReciprocalVO
-          w=World(2,4,5200); w.reset()
-          c=AStarReciprocalVO(w,0)
-          a=c.action(w)
-          assert a.shape == (2,)
-          print("smoke action",a)
-          PY
+          python benchmark/evaluate_beast_controllers.py             --checkpoint results/run11/shared_sac_cbf.pt             --config results/beast_tuning/best_config.json             --out results/beast_eval
 
-      - name: Run 30-seed fair evaluation
-        run: |
-          python benchmark/evaluate_beast_controllers.py \
-            --checkpoint results/run11/shared_sac_cbf.pt \
-            --seeds 30 \
-            --seed-base 5000 \
-            --out results/beast_eval
-
-      - name: Upload evaluation
+      - name: Upload final evaluation
         uses: actions/upload-artifact@v4
         with:
-          name: beast-controller-evaluation
+          name: peak-orca-dd-controller-evaluation
           path: results/beast_eval/
           if-no-files-found: error
