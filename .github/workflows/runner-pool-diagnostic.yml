@@ -1,0 +1,19 @@
+name: Runner Pool Diagnostic
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/beast-baselines-v1
+    paths:
+      - ".github/workflows/runner-pool-diagnostic.yml"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm runner
+        shell: pwsh
+        run: |
+          Write-Output "windows runner allocated"
+          python --version
