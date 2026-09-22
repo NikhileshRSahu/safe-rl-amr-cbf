@@ -40,15 +40,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CPU dependencies
+      - name: Build clean Python environment
         run: |
-          python -m pip install --upgrade pip
-          pip install "numpy<2.0" scipy cvxpy osqp pytest
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          rm -rf .venv .pytest_cache results/beast_tuning results/beast_eval
+          python -m pip cache purge || true
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install "numpy<2.0" scipy cvxpy osqp pytest
+          .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Run focused ORCA-DD tests
         run: |
-          pytest -q \
+          .venv/bin/pytest -q \
             tests/test_orca_geometry.py \
             tests/test_dd_motion.py \
             tests/test_beast_classical.py \
@@ -57,7 +60,7 @@ jobs:
 
       - name: Tune classical controller on validation seeds only
         run: |
-          python benchmark/tune_beast_classical.py \
+          .venv/bin/python benchmark/tune_beast_classical.py \
             --out results/beast_tuning
 
       - name: Upload frozen tuning result
@@ -81,11 +84,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CPU dependencies
+      - name: Build clean Python environment
         run: |
-          python -m pip install --upgrade pip
-          pip install "numpy<2.0" scipy cvxpy osqp
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          rm -rf .venv .pytest_cache results/beast_eval
+          python -m pip cache purge || true
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install "numpy<2.0" scipy cvxpy osqp
+          .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Download frozen validation-selected config
         uses: actions/download-artifact@v4
@@ -108,7 +114,7 @@ jobs:
 
       - name: Run exact preserved 30-seed final evaluation
         run: |
-          python benchmark/evaluate_beast_controllers.py \
+          .venv/bin/python benchmark/evaluate_beast_controllers.py \
             --checkpoint results/run11/shared_sac_cbf.pt \
             --config results/beast_tuning/best_config.json \
             --out results/beast_eval
