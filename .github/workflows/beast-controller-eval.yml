@@ -6,6 +6,17 @@ on:
       - research/beast-baselines-v1
     paths:
       - ".github/workflows/beast-controller-eval.yml"
+      - "benchmark/orca_geometry.py"
+      - "benchmark/dd_motion.py"
+      - "benchmark/beast_classical.py"
+      - "benchmark/beast_config.py"
+      - "benchmark/tune_beast_classical.py"
+      - "benchmark/evaluate_beast_controllers.py"
+      - "tests/test_orca_geometry.py"
+      - "tests/test_dd_motion.py"
+      - "tests/test_beast_classical.py"
+      - "tests/test_beast_benchmark.py"
+      - "tests/test_beast_scenarios.py"
   workflow_dispatch:
 
 concurrency:
@@ -37,11 +48,17 @@ jobs:
 
       - name: Run focused ORCA-DD tests
         run: |
-          pytest -q tests/test_orca_geometry.py tests/test_dd_motion.py tests/test_beast_classical.py tests/test_beast_benchmark.py tests/test_beast_scenarios.py
+          pytest -q \
+            tests/test_orca_geometry.py \
+            tests/test_dd_motion.py \
+            tests/test_beast_classical.py \
+            tests/test_beast_benchmark.py \
+            tests/test_beast_scenarios.py
 
       - name: Tune classical controller on validation seeds only
         run: |
-          python benchmark/tune_beast_classical.py --out results/beast_tuning --coarse-seeds 5 --finalists 4
+          python benchmark/tune_beast_classical.py \
+            --out results/beast_tuning
 
       - name: Upload frozen tuning result
         uses: actions/upload-artifact@v4
@@ -79,14 +96,22 @@ jobs:
       - name: Download exact Run 11 checkpoint
         run: |
           mkdir -p results/run11
-          curl -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip" -o /tmp/run11.zip
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip" \
+            -o /tmp/run11.zip
           unzip -q /tmp/run11.zip -d results/run11
           test -f results/run11/shared_sac_cbf.pt
           test -f results/beast_tuning/best_config.json
 
       - name: Run exact preserved 30-seed final evaluation
         run: |
-          python benchmark/evaluate_beast_controllers.py --checkpoint results/run11/shared_sac_cbf.pt --config results/beast_tuning/best_config.json --out results/beast_eval
+          python benchmark/evaluate_beast_controllers.py \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config results/beast_tuning/best_config.json \
+            --out results/beast_eval
 
       - name: Upload final evaluation
         uses: actions/upload-artifact@v4
