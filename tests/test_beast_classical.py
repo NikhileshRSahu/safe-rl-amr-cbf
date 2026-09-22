@@ -64,3 +64,20 @@ def test_close_noncolliding_pair_can_choose_separating_motion():
     c0 = AStarORCADD(w, 0, cfg)
     a0 = c0.action(w)
     assert a0[0] > -0.9
+
+
+def test_peer_responsibility_is_reciprocal_and_bounded():
+    w = World(
+        [[-4.0, -1.5], [-3.0, -1.5]],
+        [[-5.0, -1.5], [-2.0, -1.5]],
+        [math.pi, 0.0],
+    )
+    w.priority[:] = [0.2, 0.8]
+    c0 = AStarORCADD(w, 0, BeastORCAConfig())
+    c1 = AStarORCADD(w, 1, BeastORCAConfig())
+    r0 = c0._peer_responsibility(w, 1)
+    r1 = c1._peer_responsibility(w, 0)
+    assert 0.35 <= r0 <= 0.65
+    assert 0.35 <= r1 <= 0.65
+    assert abs((r0 + r1) - 1.0) < 1e-12
+    assert r0 > r1
