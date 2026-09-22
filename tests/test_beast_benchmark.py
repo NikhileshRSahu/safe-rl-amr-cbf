@@ -51,3 +51,44 @@ def test_config_rejects_unknown_field(tmp_path: Path):
         assert "unknown" in str(exc).lower()
     else:
         raise AssertionError("unknown field should fail")
+
+
+def test_ranking_prioritizes_safety_then_liveness():
+    from benchmark.tune_beast_classical import rank_key
+
+    safe_slow = dict(
+        collision_rate=0.0,
+        timeout_rate=0.2,
+        fleet_success_rate=0.5,
+        success_rate=0.8,
+        traversal_time_success_mean=40.0,
+        path_length_success_mean=30.0,
+    )
+    unsafe_fast = dict(
+        collision_rate=0.01,
+        timeout_rate=0.0,
+        fleet_success_rate=1.0,
+        success_rate=0.99,
+        traversal_time_success_mean=20.0,
+        path_length_success_mean=20.0,
+    )
+    assert rank_key(safe_slow) < rank_key(unsafe_fast)
+
+    fewer_timeouts = dict(safe_slow, timeout_rate=0.1)
+    assert rank_key(fewer_timeouts) < rank_key(safe_slow)
+
+
+def test_tuner_has_multiple_nonidentical_candidates():
+    from benchmark.tune_beast_classical import candidate_configs
+
+    configs = candidate_configs()
+    assert len(configs) >= 12
+    serial = {tuple(sorted(asdict(c).items())) for c in configs}
+    assert len(serial) == len(configs)
+
+
+def test_tuner_source_does_not_reference_final_test_seeds():
+    import inspect
+    import benchmark.tune_beast_classical as tuner
+
+    assert "TEST_SEEDS_BY_N" not in inspect.getsource(tuner)
