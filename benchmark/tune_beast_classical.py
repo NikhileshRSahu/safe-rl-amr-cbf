@@ -123,6 +123,35 @@ def candidate_configs():
     return [replace(base, **profile) for profile in profiles]
 
 
+def successive_halving_schedule():
+    """Validation-only staged search.
+
+    Every surviving candidate accumulates evidence from the same validation
+    prefixes. Earlier rows are cached and reused instead of being simulated
+    again at later stages.
+    """
+    return [
+        {"seeds_per_n": 1, "keep": 5},
+        {"seeds_per_n": 3, "keep": 2},
+        {"seeds_per_n": 15, "keep": 1},
+    ]
+
+
+def estimated_episode_budget(candidate_count=None):
+    """Expected number of simulated episodes with cached staged evaluation."""
+    count = len(candidate_configs()) if candidate_count is None else int(candidate_count)
+    total = 0
+    previous_seeds = 0
+    active = count
+    for stage in successive_halving_schedule():
+        seeds = int(stage["seeds_per_n"])
+        new_seeds = max(0, seeds - previous_seeds)
+        total += active * new_seeds * 3
+        active = min(active, int(stage["keep"]))
+        previous_seeds = seeds
+    return total
+
+
 def _episode(config, n, seed):
     from benchmark.train_multi_agent_research import World, DT
 
@@ -185,60 +214,100 @@ def evaluate_config(config, seeds_by_n):
     return summarize(rows), rows
 
 
+def _extend_rows(config, rows, target_seeds_per_n):
+    """Evaluate only validation seeds not already present in rows."""
+    seen = {(int(r["n"]), int(r["seed"])) for r in rows}
+    for n in (2, 4, 6):
+        for seed in VALIDATION_SEEDS_BY_N[n][:target_seeds_per_n]:
+            key = (n, int(seed))
+            if key not in seen:
+                rows.append(_episode(config, n, seed))
+                seen.add(key)
+    return rows
+
+
+def run_successive_halving(configs=None):
+    configs = candidate_configs() if configs is None else list(configs)
+    active = [
+        {
+            "index": idx,
+            "config": asdict(cfg),
+            "rows": [],
+        }
+        for idx, cfg in enumerate(configs)
+    ]
+    stage_results = []
+
+    for stage_no, stage in enumerate(successive_halving_schedule(), start=1):
+        seeds_per_n = int(stage["seeds_per_n"])
+        scored = []
+        for item in active:
+            cfg = BeastORCAConfig(**item["config"])
+            rows = _extend_rows(cfg, list(item["rows"]), seeds_per_n)
+            summary = summarize(rows)
+            scored.append(
+                {
+                    "index": item["index"],
+                    "config": item["config"],
+                    "summary": summary,
+                    "rank_key": rank_key(summary),
+                    "rows": rows,
+                }
+            )
+            print(
+                f"stage{stage_no}",
+                item["index"],
+                json.dumps(summary),
+                flush=True,
+            )
+
+        scored.sort(key=lambda x: tuple(x["rank_key"]))
+        stage_results.append(
+            {
+                "stage": stage_no,
+                "seeds_per_n": seeds_per_n,
+                "keep": int(stage["keep"]),
+                "ranked": scored,
+            }
+        )
+        active = scored[: int(stage["keep"])]
+
+    return active[0], stage_results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="results/beast_tuning")
-    ap.add_argument("--coarse-seeds", type=int, default=5)
-    ap.add_argument("--finalists", type=int, default=4)
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    configs = candidate_configs()
-    coarse_seeds = {
-        n: VALIDATION_SEEDS_BY_N[n][: args.coarse_seeds] for n in (2, 4, 6)
-    }
+    best, stages = run_successive_halving()
 
-    coarse = []
-    for idx, cfg in enumerate(configs):
-        summary, _ = evaluate_config(cfg, coarse_seeds)
-        coarse.append(
-            {
-                "index": idx,
-                "config": asdict(cfg),
-                "summary": summary,
-                "rank_key": rank_key(summary),
-            }
-        )
-        print("coarse", idx, json.dumps(summary), flush=True)
-    coarse.sort(key=lambda x: tuple(x["rank_key"]))
-
-    finalists = []
-    for item in coarse[: args.finalists]:
-        cfg = BeastORCAConfig(**item["config"])
-        summary, rows = evaluate_config(cfg, VALIDATION_SEEDS_BY_N)
-        finalists.append(
-            {
-                "index": item["index"],
-                "config": item["config"],
-                "summary": summary,
-                "rank_key": rank_key(summary),
-                "rows": rows,
-            }
-        )
-        print("finalist", item["index"], json.dumps(summary), flush=True)
-    finalists.sort(key=lambda x: tuple(x["rank_key"]))
-
-    best = finalists[0]
     save_beast_config(
         BeastORCAConfig(**best["config"]),
         out / "best_config.json",
     )
     (out / "validation_results.json").write_text(
-        json.dumps({"coarse": coarse, "finalists": finalists}, indent=2)
+        json.dumps(
+            {
+                "schedule": successive_halving_schedule(),
+                "estimated_episode_budget": estimated_episode_budget(),
+                "stages": stages,
+                "best": best,
+            },
+            indent=2,
+        )
     )
-    print("best", best["index"], json.dumps(best["summary"]), flush=True)
+    print(
+        "best",
+        best["index"],
+        json.dumps(best["summary"]),
+        "episode_budget",
+        estimated_episode_budget(),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
