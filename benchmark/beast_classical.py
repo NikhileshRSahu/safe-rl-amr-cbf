@@ -112,6 +112,17 @@ class AStarORCADD:
             dtype=float,
         )
 
+    def _peer_responsibility(self, w, j):
+        ego_priority = float(w.priority[self.i])
+        peer_priority = float(w.priority[j])
+        return float(
+            np.clip(
+                0.5 + 0.15 * (peer_priority - ego_priority),
+                0.35,
+                0.65,
+            )
+        )
+
     def _absolute_orca_lines(self, w, current_vel):
         i = self.i
         p = np.asarray(w.p[i], dtype=float)
@@ -126,9 +137,7 @@ class AStarORCADD:
                 continue
             other = self._velocity(w, j)
             rel = other - current_vel
-            responsibility = float(
-                np.clip(0.65 - 0.30 * float(w.priority[i]), 0.35, 0.65)
-            )
+            responsibility = self._peer_responsibility(w, j)
             relative_line = build_orca_line(
                 delta,
                 rel,
