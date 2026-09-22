@@ -21,7 +21,7 @@ class World:
 
 
 def test_clear_path_moves_forward():
-    w = World([[0, 0]], [[5, 0]], [0.0])
+    w = World([[-5, 0]], [[-4, 0]], [0.0])
     c = AStarORCADD(w, 0, BeastORCAConfig(command_speed_samples=5, command_omega_samples=7))
     a = c.action(w)
     assert a.shape == (2,)
