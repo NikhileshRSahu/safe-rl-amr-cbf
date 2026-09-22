@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "numpy<2.0" scipy torch cvxpy osqp pytest
+          pip install "numpy<2.0" scipy cvxpy osqp pytest\n          pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run ORCA-DD focused tests
         run: |
           files=""
