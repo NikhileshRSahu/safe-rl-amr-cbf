@@ -8,6 +8,10 @@ on:
       - ".github/workflows/beast-controller-eval.yml"
   workflow_dispatch:
 
+concurrency:
+  group: peak-orca-dd-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   actions: read
