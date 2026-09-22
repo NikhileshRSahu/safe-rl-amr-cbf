@@ -6,6 +6,17 @@ on:
       - research/beast-baselines-v1
     paths:
       - ".github/workflows/beast-controller-eval.yml"
+      - "benchmark/orca_geometry.py"
+      - "benchmark/dd_motion.py"
+      - "benchmark/beast_classical.py"
+      - "benchmark/beast_config.py"
+      - "benchmark/tune_beast_classical.py"
+      - "benchmark/evaluate_beast_controllers.py"
+      - "tests/test_orca_geometry.py"
+      - "tests/test_dd_motion.py"
+      - "tests/test_beast_classical.py"
+      - "tests/test_beast_benchmark.py"
+      - "tests/test_beast_scenarios.py"
   workflow_dispatch:
 
 permissions:
