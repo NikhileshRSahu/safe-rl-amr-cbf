@@ -8,9 +8,57 @@
     "minimize path_length_success_mean"
   ],
   "validation_seeds_by_n": {
-    "2": [3200,3201,3202,3203,3204,3205,3206,3207,3208,3209,3210,3211,3212,3213,3214],
-    "4": [3400,3401,3402,3403,3404,3405,3406,3407,3408,3409,3410,3411,3412,3413,3414],
-    "6": [3600,3601,3602,3603,3604,3605,3606,3607,3608,3609,3610,3611,3612,3613,3614]
+    "2": [
+      3200,
+      3201,
+      3202,
+      3203,
+      3204,
+      3205,
+      3206,
+      3207,
+      3208,
+      3209,
+      3210,
+      3211,
+      3212,
+      3213,
+      3214
+    ],
+    "4": [
+      3400,
+      3401,
+      3402,
+      3403,
+      3404,
+      3405,
+      3406,
+      3407,
+      3408,
+      3409,
+      3410,
+      3411,
+      3412,
+      3413,
+      3414
+    ],
+    "6": [
+      3600,
+      3601,
+      3602,
+      3603,
+      3604,
+      3605,
+      3606,
+      3607,
+      3608,
+      3609,
+      3610,
+      3611,
+      3612,
+      3613,
+      3614
+    ]
   },
   "finalists": [
     {
@@ -56,5 +104,5 @@
     }
   ],
   "local_acceleration_note": "Candidates 10, 12, and 13 were evaluated with a NumPy-vectorized implementation of the same reachable command set, unicycle arc equations, ORCA half-plane checks, static-clearance checks, dynamic-clearance checks, scoring, and deterministic first-wins tie rule. Candidate 12 was cross-checked against the repository controller over evolving 2-, 4-, and 6-AMR trajectories with max action difference 0.0.",
-  "test_protocol_note": "Final test seed 5200 was exposed only in a smoke run after config selection work began and was retired before final evaluation. The 2-AMR final test set is therefore 5201-5230; 4-AMR and 6-AMR sets remain 5400-5429 and 5600-5629."
+  "test_protocol_note": "Final test seeds remain the preregistered/original protocol: 5200-5229 for 2 AMRs, 5400-5429 for 4 AMRs, and 5600-5629 for 6 AMRs. A single smoke run of non-selected candidate #9 was performed on seed 5200 before finalist validation completed. That smoke result was explicitly excluded from tuning and candidate #12 was selected solely by the listed validation seeds. No candidate #12 parameter was changed from any final-test outcome."
 }
