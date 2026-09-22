@@ -168,29 +168,49 @@ class AStarORCADD:
         return lines
 
     def _arc_dynamic_safe(self, w, arc):
+        ego0 = np.asarray(w.p[self.i], dtype=float)
+        peer_initial = {
+            j: float(np.linalg.norm(ego0 - np.asarray(w.p[j], dtype=float)))
+            for j in range(w.n)
+            if j != self.i and not w.done[j]
+        }
+        human_initial = {
+            j: float(np.linalg.norm(ego0 - np.asarray(w.hp[j], dtype=float)))
+            for j in range(w.nppl)
+        }
+
         times = np.arange(len(arc), dtype=float) * DT
         for k, qpose in enumerate(arc):
             q = qpose[:2]
             t = times[k]
-            for j in range(w.n):
-                if j == self.i or w.done[j]:
-                    continue
+
+            for j, initial_distance in peer_initial.items():
                 other = np.asarray(w.p[j], dtype=float) + self._velocity(w, j) * t
-                if (
-                    np.linalg.norm(q - other)
-                    < 2 * ROBOT_R + self.cfg.peer_margin
-                ):
+                distance = float(np.linalg.norm(q - other))
+                hard = 2 * ROBOT_R
+                desired = hard + self.cfg.peer_margin
+                if distance < hard - 1e-9:
                     return False
-            for j in range(w.nppl):
+                if initial_distance >= desired and distance < desired:
+                    return False
+                if initial_distance < desired and distance < initial_distance - 1e-4:
+                    return False
+
+            for j, initial_distance in human_initial.items():
                 other = (
                     np.asarray(w.hp[j], dtype=float)
                     + np.asarray(w.hv[j], dtype=float) * t
                 )
-                if (
-                    np.linalg.norm(q - other)
-                    < 2 * ROBOT_R + self.cfg.human_margin
-                ):
+                distance = float(np.linalg.norm(q - other))
+                hard = 2 * ROBOT_R
+                desired = hard + self.cfg.human_margin
+                if distance < hard - 1e-9:
                     return False
+                if initial_distance >= desired and distance < desired:
+                    return False
+                if initial_distance < desired and distance < initial_distance - 1e-4:
+                    return False
+
         return True
 
     def _preferred(self, w, p, target):
