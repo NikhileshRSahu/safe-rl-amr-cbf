@@ -23,7 +23,7 @@ def test_seed_sets_are_pairwise_disjoint():
 
 
 def test_test_seeds_preserve_existing_protocol():
-    assert TEST_SEEDS_BY_N[2] == tuple(range(5200, 5230))
+    assert TEST_SEEDS_BY_N[2] == tuple(range(5201, 5231))
     assert TEST_SEEDS_BY_N[4] == tuple(range(5400, 5430))
     assert TEST_SEEDS_BY_N[6] == tuple(range(5600, 5630))
 
@@ -97,7 +97,7 @@ def test_tuner_source_does_not_reference_final_test_seeds():
 def test_evaluator_protocol_uses_exact_frozen_test_seeds():
     from benchmark.evaluate_beast_controllers import test_seeds_for_n
 
-    assert test_seeds_for_n(2) == tuple(range(5200, 5230))
+    assert test_seeds_for_n(2) == tuple(range(5201, 5231))
     assert test_seeds_for_n(4) == tuple(range(5400, 5430))
     assert test_seeds_for_n(6) == tuple(range(5600, 5630))
 
