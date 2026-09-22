@@ -92,3 +92,20 @@ def test_tuner_source_does_not_reference_final_test_seeds():
     import benchmark.tune_beast_classical as tuner
 
     assert "TEST_SEEDS_BY_N" not in inspect.getsource(tuner)
+
+
+def test_evaluator_protocol_uses_exact_frozen_test_seeds():
+    from benchmark.evaluate_beast_controllers import test_seeds_for_n
+
+    assert test_seeds_for_n(2) == tuple(range(5200, 5230))
+    assert test_seeds_for_n(4) == tuple(range(5400, 5430))
+    assert test_seeds_for_n(6) == tuple(range(5600, 5630))
+
+
+def test_config_digest_is_stable_and_sensitive():
+    from benchmark.evaluate_beast_controllers import config_digest
+
+    a = BeastORCAConfig()
+    b = BeastORCAConfig(time_horizon=a.time_horizon + 0.1)
+    assert config_digest(a) == config_digest(a)
+    assert config_digest(a) != config_digest(b)
