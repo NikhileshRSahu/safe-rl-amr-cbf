@@ -48,3 +48,19 @@ def test_pedestrian_crossing_triggers_avoidance_or_yield():
     a = c.action(w)
     assert not (a[0] > 0.95 and abs(a[1]) < 0.05)
     assert c.diagnostics()["orca_constraints_total"] >= 1
+
+
+def test_close_noncolliding_pair_can_choose_separating_motion():
+    w = World(
+        [[0.0, -1.5], [0.65, -1.5]],
+        [[-2.0, -1.5], [2.0, -1.5]],
+        [math.pi, 0.0],
+    )
+    cfg = BeastORCAConfig(
+        peer_margin=0.08,
+        command_speed_samples=6,
+        command_omega_samples=9,
+    )
+    c0 = AStarORCADD(w, 0, cfg)
+    a0 = c0.action(w)
+    assert a0[0] > -0.9
