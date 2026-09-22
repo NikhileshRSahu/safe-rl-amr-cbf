@@ -109,3 +109,28 @@ def test_config_digest_is_stable_and_sensitive():
     b = BeastORCAConfig(time_horizon=a.time_horizon + 0.1)
     assert config_digest(a) == config_digest(a)
     assert config_digest(a) != config_digest(b)
+
+
+def test_successive_halving_uses_full_validation_only_for_finalists():
+    from benchmark.tune_beast_classical import successive_halving_schedule
+
+    stages = successive_halving_schedule()
+    assert stages[0]["seeds_per_n"] == 1
+    assert stages[-1]["seeds_per_n"] == 15
+    assert stages[-1]["keep"] == 1
+    assert all(
+        stages[i + 1]["seeds_per_n"] > stages[i]["seeds_per_n"]
+        for i in range(len(stages) - 1)
+    )
+    assert all(
+        stages[i + 1]["keep"] <= stages[i]["keep"]
+        for i in range(len(stages) - 1)
+    )
+
+
+def test_successive_halving_budget_is_below_old_tuner_budget():
+    from benchmark.tune_beast_classical import estimated_episode_budget
+
+    # Old tuner: 16 configs * 5 seeds * 3 fleet sizes + 4 finalists * 15 * 3.
+    old_budget = 16 * 5 * 3 + 4 * 15 * 3
+    assert estimated_episode_budget() < old_budget * 0.45
