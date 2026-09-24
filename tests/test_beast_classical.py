@@ -81,3 +81,21 @@ def test_peer_responsibility_is_reciprocal_and_bounded():
     assert 0.35 <= r1 <= 0.65
     assert abs((r0 + r1) - 1.0) < 1e-12
     assert r0 > r1
+
+
+def test_controller_uses_continuous_orca_projection_before_dd_realization():
+    w = World(
+        [[-1.0, 0.0], [1.0, 0.0]],
+        [[4.0, 0.0], [-4.0, 0.0]],
+        [0.0, math.pi],
+        velocities=[1.0, 1.0],
+    )
+    c = AStarORCADD(
+        w,
+        0,
+        BeastORCAConfig(command_speed_samples=5, command_omega_samples=7),
+    )
+    c.action(w)
+    diag = c.diagnostics()
+    assert diag["continuous_projection_calls"] == 1
+    assert "projection_infeasible_events" in diag
