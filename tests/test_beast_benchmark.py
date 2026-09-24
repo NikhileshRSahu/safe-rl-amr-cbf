@@ -6,6 +6,7 @@ from benchmark.beast_classical import BeastORCAConfig
 from benchmark.beast_config import (
     DEV_SEEDS_BY_N,
     VALIDATION_SEEDS_BY_N,
+    LEGACY_TEST_SEEDS_BY_N,
     TEST_SEEDS_BY_N,
     load_beast_config,
     save_beast_config,
@@ -17,15 +18,23 @@ def test_seed_sets_are_pairwise_disjoint():
         d = set(DEV_SEEDS_BY_N[n])
         v = set(VALIDATION_SEEDS_BY_N[n])
         t = set(TEST_SEEDS_BY_N[n])
+        legacy = set(LEGACY_TEST_SEEDS_BY_N[n])
         assert not d & v
         assert not d & t
         assert not v & t
+        assert not legacy & t
 
 
-def test_test_seeds_preserve_existing_protocol():
-    assert TEST_SEEDS_BY_N[2] == tuple(range(5200, 5230))
-    assert TEST_SEEDS_BY_N[4] == tuple(range(5400, 5430))
-    assert TEST_SEEDS_BY_N[6] == tuple(range(5600, 5630))
+def test_legacy_test_seeds_preserve_existing_protocol():
+    assert LEGACY_TEST_SEEDS_BY_N[2] == tuple(range(5200, 5230))
+    assert LEGACY_TEST_SEEDS_BY_N[4] == tuple(range(5400, 5430))
+    assert LEGACY_TEST_SEEDS_BY_N[6] == tuple(range(5600, 5630))
+
+
+def test_new_final_holdout_is_fresh_and_versioned():
+    assert TEST_SEEDS_BY_N[2] == tuple(range(6200, 6230))
+    assert TEST_SEEDS_BY_N[4] == tuple(range(6400, 6430))
+    assert TEST_SEEDS_BY_N[6] == tuple(range(6600, 6630))
 
 
 def test_config_roundtrip(tmp_path: Path):
@@ -94,12 +103,12 @@ def test_tuner_source_does_not_reference_final_test_seeds():
     assert "TEST_SEEDS_BY_N" not in inspect.getsource(tuner)
 
 
-def test_evaluator_protocol_uses_exact_frozen_test_seeds():
+def test_evaluator_protocol_uses_fresh_holdout_seeds():
     from benchmark.evaluate_beast_controllers import test_seeds_for_n
 
-    assert test_seeds_for_n(2) == tuple(range(5200, 5230))
-    assert test_seeds_for_n(4) == tuple(range(5400, 5430))
-    assert test_seeds_for_n(6) == tuple(range(5600, 5630))
+    assert test_seeds_for_n(2) == tuple(range(6200, 6230))
+    assert test_seeds_for_n(4) == tuple(range(6400, 6430))
+    assert test_seeds_for_n(6) == tuple(range(6600, 6630))
 
 
 def test_config_digest_is_stable_and_sensitive():
@@ -131,6 +140,5 @@ def test_successive_halving_uses_full_validation_only_for_finalists():
 def test_successive_halving_budget_is_below_old_tuner_budget():
     from benchmark.tune_beast_classical import estimated_episode_budget
 
-    # Old tuner: 16 configs * 5 seeds * 3 fleet sizes + 4 finalists * 15 * 3.
     old_budget = 16 * 5 * 3 + 4 * 15 * 3
     assert estimated_episode_budget() < old_budget * 0.45
