@@ -1,0 +1,119 @@
+name: Peak ORCA Parallel Final
+
+on:
+  push:
+    branches:
+      - research/beast-baselines-v1
+    paths:
+      - ".github/workflows/peak-orca-parallel-final.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: peak-orca-parallel-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+      RUN11_ARTIFACT_ID: "10613786048"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Verify Peak ORCA-DD implementation
+        run: |
+          pytest -q \
+            tests/test_orca_geometry.py \
+            tests/test_dd_motion.py \
+            tests/test_beast_classical.py \
+            tests/test_beast_benchmark.py \
+            tests/test_beast_scenarios.py
+
+      - name: Tune exact Peak ORCA search in parallel
+        run: |
+          rm -rf results/peak_orca_parallel
+          python benchmark/tune_beast_classical_parallel.py \
+            --workers 4 \
+            --out results/peak_orca_parallel
+          test -s results/peak_orca_parallel/best_config.json
+          cat results/peak_orca_parallel/best_config.json
+
+      - name: Download exact frozen Run 11 SAC+CBF checkpoint
+        run: |
+          set -euo pipefail
+          mkdir -p results/run11
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RUN11_ARTIFACT_ID}/zip" \
+            > /tmp/run11.zip
+          unzip -oq /tmp/run11.zip -d results/run11
+          test -s results/run11/shared_sac_cbf.pt
+
+      - name: Verify untouched final seed protocol
+        run: |
+          python - <<'PY'
+          from benchmark.beast_config import TEST_SEEDS_BY_N
+          expected = {
+              2: tuple(range(6200, 6230)),
+              4: tuple(range(6400, 6430)),
+              6: tuple(range(6600, 6630)),
+          }
+          assert TEST_SEEDS_BY_N == expected, (TEST_SEEDS_BY_N, expected)
+          print(TEST_SEEDS_BY_N)
+          PY
+
+      - name: Run final fresh Peak ORCA vs SAC+CBF comparison
+        run: |
+          set -euo pipefail
+          rm -rf results/peak_orca_final_parallel
+          python benchmark/evaluate_beast_controllers.py \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config results/peak_orca_parallel/best_config.json \
+            --out results/peak_orca_final_parallel
+          cat results/peak_orca_final_parallel/beast_eval_summary.json
+
+      - name: Print final table
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('results/peak_orca_final_parallel/beast_eval_summary.json').read_text())
+          print('| Fleet | Controller | Success | Collision | Timeout | Fleet success | Path m* | Time s* | Throughput/min | Compute ms/agent-step |')
+          print('|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+          for n in ('2','4','6'):
+              for key,label in [('sac_cbf','SAC + CBF'),('astar_orca_dd','Peak A* + ORCA-DD')]:
+                  r=s[n][key]
+                  pct=lambda x:f'{100*x:.1f}%'
+                  num=lambda x:'—' if x is None else f'{x:.2f}'
+                  print(f"| {n} | {label} | {pct(r['success_rate'])} | {pct(r['collision_rate'])} | {pct(r['timeout_rate'])} | {pct(r['fleet_success_rate'])} | {num(r['path_length_success_mean'])} | {num(r['traversal_time_success_mean'])} | {r['mean_throughput_per_min']:.2f} | {r['mean_controller_ms_per_agent_step']:.3f} |")
+          print('\n*Path/time are means over successful agents.')
+          print('\nProvenance:')
+          print(json.dumps(s['_provenance'], indent=2))
+          PY
+
+      - name: Upload tuning and final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: peak-orca-parallel-final-results
+          path: |
+            results/peak_orca_parallel/
+            results/peak_orca_final_parallel/
+          if-no-files-found: error
