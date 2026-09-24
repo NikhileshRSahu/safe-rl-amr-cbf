@@ -1,0 +1,127 @@
+name: Peak ORCA Final One-Shot
+
+on:
+  push:
+    branches:
+      - research/beast-baselines-v1
+    paths:
+      - ".github/workflows/peak-orca-final-oneshot.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  final-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: "36039142111"
+      RETUNE_ARTIFACT: "peak-orca-dd-retune"
+      RUN11_ARTIFACT_ID: "10613786048"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Wait for validation-selected Peak ORCA config
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/peak_orca_retune
+          artifact_id=""
+          for attempt in $(seq 1 180); do
+            artifact_id=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+              --jq '.artifacts[] | select(.name == env.RETUNE_ARTIFACT) | .id' \
+              2>/dev/null | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              echo "Found retune artifact id: $artifact_id"
+              break
+            fi
+            echo "Retune artifact not ready yet (attempt ${attempt}/180)"
+            sleep 20
+          done
+          if [[ -z "$artifact_id" ]]; then
+            echo "ERROR: validation-selected ORCA config artifact did not appear" >&2
+            exit 1
+          fi
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > /tmp/peak-orca-retune.zip
+          unzip -oq /tmp/peak-orca-retune.zip -d results/peak_orca_retune
+          test -s results/peak_orca_retune/best_config.json
+          cat results/peak_orca_retune/best_config.json
+
+      - name: Download exact frozen Run 11 SAC+CBF checkpoint
+        run: |
+          set -euo pipefail
+          mkdir -p results/run11
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RUN11_ARTIFACT_ID}/zip" \
+            > /tmp/run11.zip
+          unzip -oq /tmp/run11.zip -d results/run11
+          test -s results/run11/shared_sac_cbf.pt
+
+      - name: Verify untouched final seed protocol
+        run: |
+          python - <<'PY'
+          from benchmark.beast_config import TEST_SEEDS_BY_N
+          expected = {
+              2: tuple(range(6200, 6230)),
+              4: tuple(range(6400, 6430)),
+              6: tuple(range(6600, 6630)),
+          }
+          assert TEST_SEEDS_BY_N == expected, (TEST_SEEDS_BY_N, expected)
+          print(TEST_SEEDS_BY_N)
+          PY
+
+      - name: Run final fresh Peak ORCA vs SAC+CBF comparison
+        run: |
+          set -euo pipefail
+          rm -rf results/peak_orca_final
+          python benchmark/evaluate_beast_controllers.py \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config results/peak_orca_retune/best_config.json \
+            --out results/peak_orca_final
+          cat results/peak_orca_final/beast_eval_summary.json
+
+      - name: Print final table
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('results/peak_orca_final/beast_eval_summary.json').read_text())
+          print('| Fleet | Controller | Success | Collision | Timeout | Fleet success | Path m* | Time s* | Throughput/min | Compute ms/agent-step |')
+          print('|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+          for n in ('2','4','6'):
+              for key,label in [('sac_cbf','SAC + CBF'),('astar_orca_dd','Peak A* + ORCA-DD')]:
+                  r=s[n][key]
+                  pct=lambda x:f'{100*x:.1f}%'
+                  num=lambda x:'—' if x is None else f'{x:.2f}'
+                  print(f"| {n} | {label} | {pct(r['success_rate'])} | {pct(r['collision_rate'])} | {pct(r['timeout_rate'])} | {pct(r['fleet_success_rate'])} | {num(r['path_length_success_mean'])} | {num(r['traversal_time_success_mean'])} | {r['mean_throughput_per_min']:.2f} | {r['mean_controller_ms_per_agent_step']:.3f} |")
+          print('\n*Path/time are means over successful agents.')
+          PY
+
+      - name: Upload final evaluation
+        uses: actions/upload-artifact@v4
+        with:
+          name: peak-orca-final-oneshot-results
+          path: results/peak_orca_final/
+          if-no-files-found: error
