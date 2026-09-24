@@ -1,0 +1,85 @@
+name: Peak ORCA Self-Hosted Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: peak-orca-self-hosted-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner environment
+        run: |
+          uname -a
+          python3 --version
+          df -h .
+
+      - name: Create isolated Python environment
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Verify Peak ORCA-DD implementation
+        run: |
+          . .venv/bin/activate
+          pytest -q \
+            tests/test_orca_geometry.py \
+            tests/test_dd_motion.py \
+            tests/test_beast_classical.py \
+            tests/test_beast_benchmark.py \
+            tests/test_beast_scenarios.py
+
+      - name: Tune Peak ORCA on validation seeds only
+        run: |
+          . .venv/bin/activate
+          rm -rf results/peak_orca_tuning
+          python benchmark/tune_beast_classical.py \
+            --out results/peak_orca_tuning
+          test -f results/peak_orca_tuning/best_config.json
+
+      - name: Download exact Run 11 SAC+CBF checkpoint
+        run: |
+          mkdir -p results/run11
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip" \
+            -o /tmp/run11.zip
+          unzip -oq /tmp/run11.zip -d results/run11
+          test -f results/run11/shared_sac_cbf.pt
+
+      - name: Run fresh untouched 2/4/6-AMR comparison
+        run: |
+          . .venv/bin/activate
+          rm -rf results/peak_orca_final
+          python benchmark/evaluate_beast_controllers.py \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config results/peak_orca_tuning/best_config.json \
+            --out results/peak_orca_final
+          cat results/peak_orca_final/beast_eval_summary.json
+
+      - name: Upload tuning and final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: peak-orca-self-hosted-results
+          path: |
+            results/peak_orca_tuning/
+            results/peak_orca_final/
+          if-no-files-found: error
