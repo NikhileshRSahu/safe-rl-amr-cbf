@@ -10,9 +10,8 @@ on:
       - "benchmark/dd_motion.py"
       - "benchmark/beast_classical.py"
       - "benchmark/beast_config.py"
+      - "benchmark/tune_beast_classical.py"
       - "benchmark/evaluate_beast_controllers.py"
-      - "benchmark/frozen_beast_orca_dd.json"
-      - "benchmark/frozen_beast_orca_dd_validation.json"
       - "tests/test_orca_geometry.py"
       - "tests/test_dd_motion.py"
       - "tests/test_beast_classical.py"
@@ -56,16 +55,40 @@ jobs:
             tests/test_beast_benchmark.py \
             tests/test_beast_scenarios.py
 
-      - name: Validate frozen classical config
+  tune:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tuning dependencies
         run: |
-          python - <<'PY'
-          from benchmark.beast_config import load_beast_config
-          cfg = load_beast_config("benchmark/frozen_beast_orca_dd.json")
-          print(cfg)
-          PY
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Tune peak ORCA-DD on validation seeds only
+        run: |
+          python benchmark/tune_beast_classical.py \
+            --out results/peak_orca_retune
+
+      - name: Upload validation-selected config
+        uses: actions/upload-artifact@v4
+        with:
+          name: peak-orca-dd-retune
+          path: results/peak_orca_retune/
+          if-no-files-found: error
 
   eval:
-    needs: verify
+    if: github.event_name == 'workflow_dispatch'
+    needs: tune
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -84,7 +107,13 @@ jobs:
           pip install "numpy<2.0" scipy cvxpy osqp
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Download exact Run 11 checkpoint
+      - name: Download validation-selected ORCA config
+        uses: actions/download-artifact@v4
+        with:
+          name: peak-orca-dd-retune
+          path: results/peak_orca_retune
+
+      - name: Download exact frozen Run 11 SAC+CBF checkpoint
         run: |
           mkdir -p results/run11
           curl -L \
@@ -95,13 +124,13 @@ jobs:
             -o /tmp/run11.zip
           unzip -q /tmp/run11.zip -d results/run11
           test -f results/run11/shared_sac_cbf.pt
-          test -f benchmark/frozen_beast_orca_dd.json
+          test -f results/peak_orca_retune/best_config.json
 
-      - name: Run untouched final evaluation
+      - name: Run fresh untouched holdout evaluation
         run: |
           python benchmark/evaluate_beast_controllers.py \
             --checkpoint results/run11/shared_sac_cbf.pt \
-            --config benchmark/frozen_beast_orca_dd.json \
+            --config results/peak_orca_retune/best_config.json \
             --out results/beast_eval
 
       - name: Upload final evaluation
