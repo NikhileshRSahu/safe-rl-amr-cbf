@@ -19,10 +19,20 @@ VALIDATION_SEEDS_BY_N = {
     6: tuple(range(3600, 3615)),
 }
 
-TEST_SEEDS_BY_N = {
+# Historical final-test protocol. These seeds have already been observed and
+# are retained only for reproducibility of the earlier sampled-controller work.
+LEGACY_TEST_SEEDS_BY_N = {
     2: tuple(range(5200, 5230)),
     4: tuple(range(5400, 5430)),
     6: tuple(range(5600, 5630)),
+}
+
+# Fresh holdout reserved for the continuous-ORCA architecture. Do not use
+# these seeds for development, tuning, smoke testing, or parameter selection.
+TEST_SEEDS_BY_N = {
+    2: tuple(range(6200, 6230)),
+    4: tuple(range(6400, 6430)),
+    6: tuple(range(6600, 6630)),
 }
 
 
