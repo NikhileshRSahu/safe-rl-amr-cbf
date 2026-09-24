@@ -8,7 +8,12 @@ from classical_baseline import AStarPlanner, physical_to_normalized_action
 from benchmark.train_multi_agent_research import (
     DT, WORLD, ROBOT_R, VMAX, WMAX, SHELVES, wrap,
 )
-from benchmark.orca_geometry import OrcaLine, build_orca_line, satisfies_orca_line
+from benchmark.orca_geometry import (
+    OrcaLine,
+    build_orca_line,
+    project_velocity_to_orca_halfplanes,
+    satisfies_orca_line,
+)
 from benchmark.dd_motion import (
     simulate_unicycle_arc,
     command_terminal_velocity,
@@ -46,6 +51,14 @@ class BeastORCAConfig:
 
 
 class AStarORCADD:
+    """A* global planning + continuous ORCA + differential-drive realization.
+
+    ORCA first solves the holonomic collision-avoidance problem in velocity
+    space. The differential-drive command search then realizes that ORCA
+    target subject to the robot's nonholonomic dynamics and verifies the
+    actually executed unicycle arc against static and dynamic obstacles.
+    """
+
     def __init__(self, world, i: int, config: BeastORCAConfig | None = None):
         self.i = int(i)
         self.cfg = config or BeastORCAConfig()
@@ -68,6 +81,8 @@ class AStarORCADD:
         self.prev_cmd = np.array([0.0, 0.0], dtype=float)
         self._diag = dict(
             orca_constraints_total=0,
+            continuous_projection_calls=0,
+            projection_infeasible_events=0,
             infeasible_command_events=0,
             stop_yield_ticks=0,
             replan_count=0,
@@ -176,6 +191,19 @@ class AStarORCADD:
         self._diag["orca_constraints_total"] += len(lines)
         return lines
 
+    def _continuous_orca_target(self, preferred_velocity, lines):
+        """Solve the continuous ORCA velocity problem before DD realization."""
+        self._diag["continuous_projection_calls"] += 1
+        projected = project_velocity_to_orca_halfplanes(
+            np.asarray(preferred_velocity, dtype=float),
+            lines,
+            VMAX,
+        )
+        if projected is None:
+            self._diag["projection_infeasible_events"] += 1
+            return np.zeros(2, dtype=float)
+        return np.asarray(projected, dtype=float)
+
     def _arc_dynamic_safe(self, w, arc):
         ego0 = np.asarray(w.p[self.i], dtype=float)
         peer_initial = {
@@ -256,6 +284,15 @@ class AStarORCADD:
         )
         return speed, omega, preferred_velocity
 
+    def _dd_target_command(self, w, orca_velocity):
+        speed = float(np.linalg.norm(orca_velocity))
+        if speed <= 1e-9:
+            return 0.0, 0.0
+        heading = math.atan2(float(orca_velocity[1]), float(orca_velocity[0]))
+        heading_error = wrap(heading - float(w.th[self.i]))
+        omega = float(np.clip(heading_error / max(DT, 1e-9), -WMAX, WMAX))
+        return min(speed, VMAX), omega
+
     def action(self, w, i=None):
         i = self.i
         if w.done[i]:
@@ -284,15 +321,22 @@ class AStarORCADD:
 
         current_vel = self._velocity(w, i)
         lines = self._absolute_orca_lines(w, current_vel)
-        preferred_speed, preferred_omega, preferred_velocity = self._preferred(
-            w, p, target
+        _, _, preferred_velocity = self._preferred(w, p, target)
+
+        orca_target_velocity = self._continuous_orca_target(
+            preferred_velocity,
+            lines,
+        )
+        target_speed, target_omega = self._dd_target_command(
+            w,
+            orca_target_velocity,
         )
 
         commands = reachable_commands(
             float(w.v[i]),
             float(w.w[i]),
-            preferred_speed=preferred_speed,
-            preferred_omega=preferred_omega,
+            preferred_speed=target_speed,
+            preferred_omega=target_omega,
             v_max=VMAX,
             w_max=WMAX,
             speed_samples=self.cfg.command_speed_samples,
@@ -340,8 +384,8 @@ class AStarORCADD:
             progress_score = float(
                 np.linalg.norm(self.goal - p) - np.linalg.norm(self.goal - end)
             )
-            preferred_error = float(
-                np.linalg.norm(realized_velocity - preferred_velocity)
+            orca_tracking_error = float(
+                np.linalg.norm(realized_velocity - orca_target_velocity)
             )
             smoothness = (
                 abs(v_cmd - float(self.prev_cmd[0]))
@@ -349,7 +393,7 @@ class AStarORCADD:
             )
             score = (
                 self.cfg.progress_weight * progress_score
-                - 1.2 * preferred_error
+                - 1.2 * orca_tracking_error
                 - self.cfg.smoothness_weight * smoothness
                 + 0.08 * v_cmd
             )
