@@ -10,6 +10,166 @@ import numpy as np
 
 from benchmark.beast_classical import AStarORCADD
 from benchmark.beast_config import load_beast_config
+from benchmark.train_multi_agent_research import DT, SHELVES, WORLD, World
+
+
+HUMAN_RADIUS = 0.28
+HUMAN_MIN_SEPARATION = 2.0 * HUMAN_RADIUS + 0.08
+HUMAN_MAX_SPEED = 0.60
+HUMAN_MIN_SPEED = 0.20
+
+
+def _rect_distance(point, rect):
+    x, y = float(point[0]), float(point[1])
+    x0, y0, x1, y1 = rect
+    cx = min(max(x, x0), x1)
+    cy = min(max(y, y0), y1)
+    return math.hypot(x - cx, y - cy)
+
+
+def _rotate(vec, angle):
+    c, s = math.cos(angle), math.sin(angle)
+    x, y = float(vec[0]), float(vec[1])
+    return np.array([c * x - s * y, s * x + c * y], dtype=np.float32)
+
+
+class RealisticHumanWorld(World):
+    """Demo-only World with collision-aware, shelf-aware pedestrian motion.
+
+    The AMR dynamics, controller interfaces, collision definitions, and reward
+    logic remain inherited from the research World.  Only pedestrian spawning
+    and the velocity chosen immediately before the base-world pedestrian update
+    are changed.  This keeps the thesis benchmark untouched while making demo
+    pedestrians behave like finite-radius people instead of point particles
+    moving through warehouse geometry or one another.
+    """
+
+    def reset(self):
+        obs = super().reset()
+        self._spawn_realistic_humans()
+        # Human positions are part of every AMR observation, so rebuild the
+        # observations after replacing the base world's random pedestrian set.
+        return [self.obs(i) for i in range(self.n)]
+
+    def _human_point_is_free(self, point, extra=0.0):
+        radius = HUMAN_RADIUS + float(extra)
+        if abs(float(point[0])) > WORLD - radius:
+            return False
+        if abs(float(point[1])) > WORLD - radius:
+            return False
+        return all(_rect_distance(point, rect) >= radius for rect in SHELVES)
+
+    def _spawn_realistic_humans(self):
+        placed = []
+        for idx in range(self.nppl):
+            chosen = None
+            for _ in range(3000):
+                q = self.rng.uniform(-8.5, 8.5, size=2).astype(np.float32)
+                if not self._human_point_is_free(q, extra=0.08):
+                    continue
+                if any(np.linalg.norm(q - p) < HUMAN_MIN_SEPARATION + 0.18 for p in placed):
+                    continue
+                chosen = q
+                break
+            if chosen is None:
+                raise RuntimeError(f"could not place realistic pedestrian {idx}")
+            placed.append(chosen)
+
+        self.hp = np.asarray(placed, dtype=np.float32)
+        angles = self.rng.uniform(-math.pi, math.pi, self.nppl)
+        speeds = self.rng.uniform(0.28, 0.52, self.nppl)
+        self.hv = np.c_[np.cos(angles) * speeds, np.sin(angles) * speeds].astype(np.float32)
+        self._human_preferred_speed = speeds.astype(np.float32)
+
+    def _candidate_is_safe(self, person_idx, next_point, planned_points):
+        if not self._human_point_is_free(next_point, extra=0.03):
+            return False
+
+        max_step = HUMAN_MAX_SPEED * DT
+        for j in range(self.nppl):
+            if j == person_idx:
+                continue
+            if j < len(planned_points) and planned_points[j] is not None:
+                other = planned_points[j]
+                required = HUMAN_MIN_SEPARATION
+            else:
+                # The unplanned pedestrian can still move toward us by at most
+                # one max-speed step, so reserve that distance now.
+                other = self.hp[j]
+                required = HUMAN_MIN_SEPARATION + max_step
+            if np.linalg.norm(next_point - other) < required:
+                return False
+        return True
+
+    def _choose_human_velocities(self):
+        planned_points = [None] * self.nppl
+        new_velocities = np.zeros_like(self.hv)
+
+        # A small correlated heading drift gives natural walking rather than
+        # perfectly straight scripted particles while remaining deterministic
+        # under the episode seed.
+        angle_offsets = (0.0, 0.28, -0.28, 0.55, -0.55, 0.85, -0.85, 1.15, -1.15, 1.57, -1.57, math.pi)
+        speed_scales = (1.0, 0.82, 0.62, 0.42, 0.0)
+
+        for i in range(self.nppl):
+            current = np.asarray(self.hv[i], dtype=np.float32)
+            current_speed = float(np.linalg.norm(current))
+            if current_speed < 1e-6:
+                heading = float(self.rng.uniform(-math.pi, math.pi))
+                current = np.array([math.cos(heading), math.sin(heading)], dtype=np.float32)
+            else:
+                current = current / current_speed
+
+            wander = float(self.rng.normal(0.0, 0.045))
+            desired_dir = _rotate(current, wander)
+
+            # Human-human personal-space repulsion biases the preferred heading
+            # before the hard non-overlap check below.
+            repulse = np.zeros(2, dtype=np.float32)
+            for j in range(self.nppl):
+                if i == j:
+                    continue
+                delta = self.hp[i] - self.hp[j]
+                dist = float(np.linalg.norm(delta))
+                if 1e-6 < dist < 1.35:
+                    repulse += (delta / dist) * ((1.35 - dist) / 1.35)
+            desired = desired_dir + 0.75 * repulse
+            norm = float(np.linalg.norm(desired))
+            if norm > 1e-6:
+                desired /= norm
+            else:
+                desired = desired_dir
+
+            target_speed = float(np.clip(self._human_preferred_speed[i], HUMAN_MIN_SPEED, HUMAN_MAX_SPEED))
+            best_velocity = np.zeros(2, dtype=np.float32)
+            best_point = self.hp[i].copy()
+            best_score = -float("inf")
+
+            for angle in angle_offsets:
+                direction = _rotate(desired, angle)
+                for scale in speed_scales:
+                    speed = target_speed * scale
+                    velocity = direction * speed
+                    next_point = self.hp[i] + velocity * DT
+                    if not self._candidate_is_safe(i, next_point, planned_points):
+                        continue
+                    # Prefer the intended heading and normal human walking speed;
+                    # still allow slowing/stopping when an aisle interaction is tight.
+                    alignment = float(np.dot(direction, desired))
+                    score = 2.0 * alignment + 0.75 * scale
+                    if score > best_score:
+                        best_score = score
+                        best_velocity = velocity.astype(np.float32)
+                        best_point = next_point.astype(np.float32)
+
+            new_velocities[i] = best_velocity
+            planned_points[i] = best_point
+
+        self.hv = new_velocities
+
+    def step(self, actions, use_cbf=True):
+        self._choose_human_velocities()
+        return super().step(actions, use_cbf)
 
 
 def _snapshot(w):
@@ -17,16 +177,21 @@ def _snapshot(w):
         "p": np.asarray(w.p, dtype=np.float32).copy(),
         "th": np.asarray(w.th, dtype=np.float32).copy(),
         "hp": np.asarray(w.hp, dtype=np.float32).copy(),
+        "hv": np.asarray(w.hv, dtype=np.float32).copy(),
         "done": np.asarray(w.done, dtype=bool).copy(),
         "hit": np.asarray(w.hit, dtype=bool).copy(),
     }
 
 
-def _run_sac(actor, seed: int, humans: int):
-    import torch
-    from benchmark.train_multi_agent_research import World
+def _make_world(humans: int, seed: int, realistic_humans: bool):
+    cls = RealisticHumanWorld if realistic_humans else World
+    return cls(4, humans, seed)
 
-    w = World(4, humans, seed)
+
+def _run_sac(actor, seed: int, humans: int, realistic_humans: bool):
+    import torch
+
+    w = _make_world(humans, seed, realistic_humans)
     obs = w.reset()
     frames = [_snapshot(w)]
     for _ in range(600):
@@ -41,10 +206,8 @@ def _run_sac(actor, seed: int, humans: int):
     return w, frames
 
 
-def _run_orca(config, seed: int, humans: int):
-    from benchmark.train_multi_agent_research import World
-
-    w = World(4, humans, seed)
+def _run_orca(config, seed: int, humans: int, realistic_humans: bool):
+    w = _make_world(humans, seed, realistic_humans)
     w.reset()
     ctrls = [AStarORCADD(w, i, config) for i in range(4)]
     frames = [_snapshot(w)]
@@ -85,7 +248,6 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     import matplotlib.pyplot as plt
     from matplotlib.animation import FFMpegWriter
     from matplotlib.patches import Rectangle
-    from benchmark.train_multi_agent_research import SHELVES, WORLD, DT
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 8), dpi=120)
@@ -107,7 +269,8 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     robot_pts = [ax.plot([], [], markers[i], markersize=10, label=f"AMR {i+1}")[0] for i in range(4)]
     heading_lines = [ax.plot([], [], linewidth=2)[0] for _ in range(4)]
     trails = [ax.plot([], [], linewidth=1.3, alpha=0.7)[0] for _ in range(4)]
-    human_pts = ax.plot([], [], "x", markersize=6, label="Humans")[0]
+    human_pts = ax.scatter([], [], marker="o", s=45, label="Humans")
+    human_heading = [ax.plot([], [], linewidth=0.8, alpha=0.75)[0] for _ in range(len(frames[0]["hp"]))]
     time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
     status_text = ax.text(0.02, 0.94, "", transform=ax.transAxes, va="top")
     ax.legend(loc="lower right", fontsize=7, ncol=2)
@@ -130,8 +293,19 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
                 history[i].append((float(p[0]), float(p[1])))
                 arr = np.asarray(history[i], dtype=float)
                 trails[i].set_data(arr[:, 0], arr[:, 1])
+
             hp = f["hp"]
-            human_pts.set_data(hp[:, 0], hp[:, 1])
+            hv = f["hv"]
+            human_pts.set_offsets(hp)
+            for j in range(len(hp)):
+                speed = float(np.linalg.norm(hv[j]))
+                if speed > 1e-5:
+                    direction = hv[j] / speed
+                    end = hp[j] + 0.35 * direction
+                else:
+                    end = hp[j]
+                human_heading[j].set_data([hp[j, 0], end[0]], [hp[j, 1], end[1]])
+
             t = k * DT
             time_text.set_text(f"sim time: {t:5.1f} s")
             done = int(np.sum(f["done"] & ~f["hit"]))
@@ -147,6 +321,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--humans", type=int, default=6)
+    ap.add_argument("--realistic-humans", action="store_true")
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", required=True)
@@ -164,8 +339,8 @@ def main():
     actor.load_state_dict(ck["actor"])
     actor.eval()
 
-    sac_w, sac_frames = _run_sac(actor, args.seed, args.humans)
-    orca_w, orca_frames, diagnostics = _run_orca(config, args.seed, args.humans)
+    sac_w, sac_frames = _run_sac(actor, args.seed, args.humans, args.realistic_humans)
+    orca_w, orca_frames, diagnostics = _run_orca(config, args.seed, args.humans, args.realistic_humans)
     sac = _summary(sac_w)
     orca = _summary(orca_w, diagnostics)
     shared = bool(sac["fleet_success"] and orca["fleet_success"])
@@ -183,6 +358,9 @@ def main():
     meta = {
         "seed": args.seed,
         "humans": args.humans,
+        "human_model": "realistic_collision_aware" if args.realistic_humans else "legacy_linear",
+        "human_radius": HUMAN_RADIUS if args.realistic_humans else None,
+        "human_min_separation": HUMAN_MIN_SEPARATION if args.realistic_humans else None,
         "shared_fleet_success": shared,
         "sac_cbf": sac,
         "peak_orca_dd": orca,
@@ -195,16 +373,17 @@ def main():
     if not shared:
         return
 
+    human_label = "realistic humans" if args.realistic_humans else "humans"
     _render(
         sac_frames,
         sac_w.g,
-        f"4-AMR SAC+CBF — {args.humans} humans — seed {args.seed}",
+        f"4-AMR SAC+CBF — {args.humans} {human_label} — seed {args.seed}",
         out / "sac_cbf.mp4",
     )
     _render(
         orca_frames,
         orca_w.g,
-        f"4-AMR Peak ORCA-DD — {args.humans} humans — seed {args.seed}",
+        f"4-AMR Peak ORCA-DD — {args.humans} {human_label} — seed {args.seed}",
         out / "peak_orca_dd.mp4",
     )
 
