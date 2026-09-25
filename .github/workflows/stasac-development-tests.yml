@@ -5,6 +5,7 @@ on:
     branches: [research/beast-baselines-v1]
     paths:
       - "benchmark/warehouse_interaction_features.py"
+      - "benchmark/shared_warehouse_perception.py"
       - "benchmark/spatiotemporal_policy.py"
       - "benchmark/train_stasac_cbf.py"
       - "benchmark/stasac_warehouse.py"
@@ -14,6 +15,7 @@ on:
       - "benchmark/best_vs_best_protocol.py"
       - "benchmark/best_vs_best_evaluation.py"
       - "tests/test_warehouse_interaction_features.py"
+      - "tests/test_shared_warehouse_perception.py"
       - "tests/test_spatiotemporal_policy.py"
       - "tests/test_stasac_training.py"
       - "tests/test_stasac_warehouse.py"
@@ -47,6 +49,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_warehouse_interaction_features.py \
+            $(test -f tests/test_shared_warehouse_perception.py && echo tests/test_shared_warehouse_perception.py) \
             $(test -f tests/test_spatiotemporal_policy.py && echo tests/test_spatiotemporal_policy.py) \
             $(test -f tests/test_stasac_training.py && echo tests/test_stasac_training.py) \
             $(test -f tests/test_stasac_warehouse.py && echo tests/test_stasac_warehouse.py) \
