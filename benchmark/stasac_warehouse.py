@@ -7,7 +7,6 @@ import torch
 
 from classical_baseline import AStarPlanner
 from benchmark.best_vs_best_protocol import ScenarioSpec
-from benchmark.human_sweep_experiment import SweepHumanWorld
 from benchmark.shared_warehouse_perception import visible_with_shelves
 from benchmark.spatiotemporal_policy import reset_hidden
 from benchmark.train_multi_agent_research import DT, ROBOT_R, SHELVES, VMAX, WMAX, WORLD, wrap
@@ -16,21 +15,14 @@ from benchmark.warehouse_interaction_features import (
     ObservationHistory,
     build_entity_batch,
 )
+from benchmark.warehouse_scenario_world import make_scenario_world
 
 
-# 2 local A* waypoint + 2 local final goal + goal distance + heading error
-# + current v/w + right-of-way priority + 8 static lidar rays.
 EGO_DIM = 17
 
 
 def make_training_world(spec: ScenarioSpec, seed: int):
-    return SweepHumanWorld(
-        spec.n_amr,
-        spec.humans,
-        int(seed),
-        speed_scale=spec.speed_scale,
-        randomness_level=spec.randomness_level,
-    )
+    return make_scenario_world(spec, int(seed))
 
 
 def _rotate_world_to_body(vector, heading: float):
@@ -43,14 +35,7 @@ def _rotate_world_to_body(vector, heading: float):
 class WarehouseObservationBuilder:
     """Causal policy observations with common A* route context and visible entities."""
 
-    def __init__(
-        self,
-        world,
-        *,
-        perception_range: float = 6.0,
-        history_len: int = 8,
-        lookahead_distance: float = 1.8,
-    ):
+    def __init__(self, world, *, perception_range: float = 6.0, history_len: int = 8, lookahead_distance: float = 1.8):
         self.perception_range = float(perception_range)
         self.lookahead_distance = float(lookahead_distance)
         self.histories = [ObservationHistory(maxlen=history_len) for _ in range(world.n)]
@@ -65,9 +50,7 @@ class WarehouseObservationBuilder:
                 margin=0.10,
                 resolution=0.25,
             )
-            path = planner.plan(tuple(world.p[i]), tuple(world.g[i])) or [
-                tuple(world.p[i]), tuple(world.g[i])
-            ]
+            path = planner.plan(tuple(world.p[i]), tuple(world.g[i])) or [tuple(world.p[i]), tuple(world.g[i])]
             self.paths.append(path)
 
     def _waypoint(self, world, i: int):
@@ -89,43 +72,24 @@ class WarehouseObservationBuilder:
     def _entity_observations(self, world, i: int, now: float):
         p = np.asarray(world.p[i], dtype=float)
         items: list[EntityObservation] = []
-        # AMRs are assumed fleet-connected, so their states are available within
-        # the communication/perception range even if a shelf blocks line of sight.
         for j in range(world.n):
             if j == i or world.done[j]:
                 continue
             q = np.asarray(world.p[j], dtype=float)
             if float(np.linalg.norm(q - p)) > self.perception_range:
                 continue
-            velocity = np.array(
-                [
-                    math.cos(float(world.th[j])) * float(world.v[j]),
-                    math.sin(float(world.th[j])) * float(world.v[j]),
-                ],
-                dtype=np.float32,
-            )
+            velocity = np.array([
+                math.cos(float(world.th[j])) * float(world.v[j]),
+                math.sin(float(world.th[j])) * float(world.v[j]),
+            ], dtype=np.float32)
             items.append(EntityObservation(f"amr-{j}", "amr", q, velocity, now, True))
-        # Humans are sensor-observed and therefore shelf-occluded.
         for j in range(world.nppl):
             q = np.asarray(world.hp[j], dtype=float)
-            if not visible_with_shelves(
-                p,
-                q,
-                SHELVES,
-                max_range=self.perception_range,
-                shelf_padding=0.02,
-            ):
+            if not visible_with_shelves(p, q, SHELVES, max_range=self.perception_range, shelf_padding=0.02):
                 continue
-            items.append(
-                EntityObservation(
-                    f"human-{j}",
-                    "human",
-                    q,
-                    np.asarray(world.hv[j], dtype=np.float32),
-                    now,
-                    True,
-                )
-            )
+            items.append(EntityObservation(
+                f"human-{j}", "human", q, np.asarray(world.hv[j], dtype=np.float32), now, True
+            ))
         return items
 
     def observe(self, world, i: int, *, now: float | None = None):
@@ -140,28 +104,24 @@ class WarehouseObservationBuilder:
         goal_heading = math.atan2(float(goal[1] - p[1]), float(goal[0] - p[0]))
         heading_error = wrap(goal_heading - heading)
         rays = [world.ray(i, heading + k * math.pi / 4.0) for k in range(8)]
-        ego = np.asarray(
-            [
-                np.clip(waypoint_body[0] / 6.0, -1.0, 1.0),
-                np.clip(waypoint_body[1] / 6.0, -1.0, 1.0),
-                np.clip(goal_body[0] / 20.0, -1.0, 1.0),
-                np.clip(goal_body[1] / 20.0, -1.0, 1.0),
-                np.clip(goal_distance / 20.0, 0.0, 1.0),
-                heading_error / math.pi,
-                np.clip(float(world.v[i]) / VMAX, 0.0, 1.0),
-                np.clip(float(world.w[i]) / WMAX, -1.0, 1.0),
-                float(world.priority[i]),
-                *rays,
-            ],
-            dtype=np.float32,
-        )
+        ego = np.asarray([
+            np.clip(waypoint_body[0] / 6.0, -1.0, 1.0),
+            np.clip(waypoint_body[1] / 6.0, -1.0, 1.0),
+            np.clip(goal_body[0] / 20.0, -1.0, 1.0),
+            np.clip(goal_body[1] / 20.0, -1.0, 1.0),
+            np.clip(goal_distance / 20.0, 0.0, 1.0),
+            heading_error / math.pi,
+            np.clip(float(world.v[i]) / VMAX, 0.0, 1.0),
+            np.clip(float(world.w[i]) / WMAX, -1.0, 1.0),
+            float(world.priority[i]),
+            *rays,
+        ], dtype=np.float32)
         if ego.shape != (EGO_DIM,):
             raise RuntimeError(f"ego feature contract broken: {ego.shape}")
 
-        ego_velocity = np.array(
-            [math.cos(heading) * float(world.v[i]), math.sin(heading) * float(world.v[i])],
-            dtype=np.float32,
-        )
+        ego_velocity = np.array([
+            math.cos(heading) * float(world.v[i]), math.sin(heading) * float(world.v[i])
+        ], dtype=np.float32)
         observations = self._entity_observations(world, i, now)
         history = self.histories[i]
         last_times = self._last_history_time[i]
@@ -185,14 +145,11 @@ def _actor_action(actor, ego, entity_batch, hidden, deterministic=True):
     entities_t = torch.tensor(entity_batch.features, dtype=torch.float32).unsqueeze(0)
     mask_t = torch.tensor(entity_batch.mask, dtype=torch.bool).unsqueeze(0)
     with torch.no_grad():
-        action, _, next_hidden, _ = actor.sample(
-            ego_t, entities_t, mask_t, hidden, deterministic=deterministic
-        )
+        action, _, next_hidden, _ = actor.sample(ego_t, entities_t, mask_t, hidden, deterministic=deterministic)
     return action[0].cpu().numpy().astype(np.float32), next_hidden
 
 
 def rollout_untrained_actor_smoke(actor, world, *, steps: int = 16):
-    """Short real-world integration probe; success is numerical stability only."""
     builder = WarehouseObservationBuilder(world, perception_range=100.0)
     hidden = [torch.zeros(1, actor.hidden_dim) for _ in range(world.n)]
     finite_actions = True
@@ -218,12 +175,8 @@ def rollout_untrained_actor_smoke(actor, world, *, steps: int = 16):
         if np.all(done):
             break
     finite_world = bool(
-        np.isfinite(world.p).all()
-        and np.isfinite(world.th).all()
-        and np.isfinite(world.v).all()
-        and np.isfinite(world.w).all()
-        and np.isfinite(world.hp).all()
-        and np.isfinite(world.hv).all()
+        np.isfinite(world.p).all() and np.isfinite(world.th).all() and np.isfinite(world.v).all()
+        and np.isfinite(world.w).all() and np.isfinite(world.hp).all() and np.isfinite(world.hv).all()
     )
     return {
         "steps": ran,
