@@ -6,17 +6,25 @@ from benchmark.spatiotemporal_policy import STASACActor
 from benchmark.stasac_training_runner import (
     collect_training_episode,
     training_curriculum,
+    training_seed_for_episode,
 )
 from benchmark.stasac_warehouse import EGO_DIM
 
 
-def test_training_curriculum_uses_only_development_scenarios_and_never_holdout_seeds():
+def test_training_curriculum_uses_all_warehouse_development_scenarios():
     curriculum = training_curriculum()
     assert curriculum
-    assert {s.family for s in curriculum} >= {"intent", "mixed", "density"}
+    names = {s.name for s in curriculum}
+    assert {"cross_intersection", "shelf_corner", "hesitation", "mixed_behavior"} <= names
+    assert {s.family for s in curriculum} >= {"intent", "occlusion", "mixed", "density"}
+
+
+def test_training_seed_schedule_never_leaks_validation_or_holdout():
     dev, validation, holdout = split_seed_sets(frozen=True)
-    assert set(dev).isdisjoint(validation)
-    assert set(dev).isdisjoint(holdout)
+    generated = {training_seed_for_episode(i) for i in range(500)}
+    assert generated <= set(dev)
+    assert generated.isdisjoint(validation)
+    assert generated.isdisjoint(holdout)
 
 
 def test_short_real_episode_collects_bounded_actor_and_teacher_actions_with_variable_entities():
