@@ -1,0 +1,55 @@
+name: Render Verified VO RVO ORCA Proof
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/render_classical_progression_proof.py"
+      - ".github/workflows/render-classical-progression-proof.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp matplotlib
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Render exact progression seed
+        run: |
+          python benchmark/render_classical_progression_proof.py \
+            --seed 9103 \
+            --config benchmark/frozen_peak_orca_config.json \
+            --out results/classical_progression_9103
+      - name: Verify expected progression
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('results/classical_progression_9103/metadata.json'))
+          c=p['controllers']
+          assert c['vo']['success'] == 4 and c['vo']['collision'] == 0 and c['vo']['timeout'] == 2
+          assert c['rvo']['success'] == 5 and c['rvo']['collision'] == 0 and c['rvo']['timeout'] == 1
+          assert c['orca']['success'] == 6 and c['orca']['collision'] == 0 and c['orca']['timeout'] == 0
+          print('VERIFIED:', json.dumps(p, indent=2))
+          PY
+          for f in results/classical_progression_9103/*_proof.mp4; do ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f"; done
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-classical-progression-seed9103
+          path: results/classical_progression_9103/
+          if-no-files-found: error
