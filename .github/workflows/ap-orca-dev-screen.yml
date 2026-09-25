@@ -1,0 +1,58 @@
+name: AP-ORCA Development Screen
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - ".github/workflows/ap-orca-dev-screen.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [cross_intersection, shelf_corner, hesitation, mixed_behavior, density_18, density_24]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Evaluate AP-ORCA plus shared CBF
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from benchmark.best_vs_best_protocol import scenario_catalog, development_evaluation_seeds
+          from benchmark.best_vs_best_runner import run_ap_orca_episode, aggregate_episode_rows
+
+          name=os.environ['SCENARIO']
+          spec=next(s for s in scenario_catalog() if s.name==name)
+          seeds=development_evaluation_seeds()[:5]
+          rows=[run_ap_orca_episode(spec, seed=s, max_steps=600) for s in seeds]
+          agg=aggregate_episode_rows(rows)
+          out=Path('results/ap_orca_dev_screen')
+          out.mkdir(parents=True, exist_ok=True)
+          payload={'controller':'AP-ORCA+CBF','scenario':name,'seeds':list(seeds),'aggregate':agg.__dict__,'episodes':rows}
+          (out/f'{name}.json').write_text(json.dumps(payload, indent=2))
+          print(json.dumps(payload['aggregate'], indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ap-orca-dev-${{ matrix.scenario }}
+          path: results/ap_orca_dev_screen/${{ matrix.scenario }}.json
+          if-no-files-found: error
