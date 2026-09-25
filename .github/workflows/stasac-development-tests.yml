@@ -12,6 +12,7 @@ on:
       - "benchmark/orca_teacher.py"
       - "benchmark/adaptive_predictive_orca.py"
       - "benchmark/best_vs_best_protocol.py"
+      - "benchmark/best_vs_best_evaluation.py"
       - "tests/test_warehouse_interaction_features.py"
       - "tests/test_spatiotemporal_policy.py"
       - "tests/test_stasac_training.py"
@@ -19,6 +20,7 @@ on:
       - "tests/test_stasac_training_runner.py"
       - "tests/test_orca_teacher_warmstart.py"
       - "tests/test_best_vs_best_protocol.py"
+      - "tests/test_best_vs_best_evaluation.py"
       - ".github/workflows/stasac-development-tests.yml"
   workflow_dispatch:
 
@@ -50,4 +52,5 @@ jobs:
             $(test -f tests/test_stasac_warehouse.py && echo tests/test_stasac_warehouse.py) \
             $(test -f tests/test_stasac_training_runner.py && echo tests/test_stasac_training_runner.py) \
             $(test -f tests/test_orca_teacher_warmstart.py && echo tests/test_orca_teacher_warmstart.py) \
-            $(test -f tests/test_best_vs_best_protocol.py && echo tests/test_best_vs_best_protocol.py)
+            $(test -f tests/test_best_vs_best_protocol.py && echo tests/test_best_vs_best_protocol.py) \
+            $(test -f tests/test_best_vs_best_evaluation.py && echo tests/test_best_vs_best_evaluation.py)
