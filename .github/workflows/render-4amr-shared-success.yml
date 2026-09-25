@@ -1,0 +1,66 @@
+name: Render 4-AMR Shared-Success Videos
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/render_shared_success_case.py"
+      - ".github/workflows/render-4amr-shared-success.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render:
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [6400, 6401, 6402, 6403, 6404, 6405, 6406, 6407, 6408, 6409]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+      RUN11_ARTIFACT_ID: 10613786048
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp matplotlib pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Download exact Run 11 checkpoint
+        run: |
+          mkdir -p results/run11
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${RUN11_ARTIFACT_ID}/zip" \
+            > /tmp/run11.zip
+          unzip -oq /tmp/run11.zip -d results/run11
+          test -s results/run11/shared_sac_cbf.pt
+
+      - name: Run same-seed comparison and render if both succeed
+        run: |
+          python benchmark/render_shared_success_case.py \
+            --seed ${{ matrix.seed }} \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config benchmark/frozen_peak_orca_config.json \
+            --out results/video_${{ matrix.seed }}
+
+      - name: Upload metadata/video artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-case-${{ matrix.seed }}
+          path: results/video_${{ matrix.seed }}/
+          if-no-files-found: error
