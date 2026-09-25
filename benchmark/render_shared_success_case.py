@@ -10,11 +10,12 @@ import numpy as np
 
 from benchmark.beast_classical import AStarORCADD
 from benchmark.beast_config import load_beast_config
-from benchmark.train_multi_agent_research import DT, SHELVES, WORLD, World
+from benchmark.train_multi_agent_research import DT, ROBOT_R, SHELVES, WORLD, World
 
 
 HUMAN_RADIUS = 0.28
 HUMAN_MIN_SEPARATION = 2.0 * HUMAN_RADIUS + 0.08
+HUMAN_AMR_CLEARANCE = ROBOT_R + HUMAN_RADIUS + 0.08
 HUMAN_MAX_SPEED = 0.60
 HUMAN_MIN_SPEED = 0.20
 
@@ -34,28 +35,29 @@ def _rotate(vec, angle):
 
 
 class RealisticHumanWorld(World):
-    """Demo-only World with collision-aware, shelf-aware pedestrian motion.
+    """Demo-only warehouse world with finite-radius, collision-aware pedestrians.
 
-    The AMR dynamics, controller interfaces, collision definitions, and reward
-    logic remain inherited from the research World.  Only pedestrian spawning
-    and the velocity chosen immediately before the base-world pedestrian update
-    are changed.  This keeps the thesis benchmark untouched while making demo
-    pedestrians behave like finite-radius people instead of point particles
-    moving through warehouse geometry or one another.
+    AMR dynamics, collision definitions and controller interfaces are inherited
+    unchanged from the research World. Only pedestrian spawning and motion are
+    replaced for visualization/demo runs, so thesis benchmark results are not
+    altered by this human model.
     """
 
     def reset(self):
-        obs = super().reset()
+        super().reset()
         self._spawn_realistic_humans()
-        # Human positions are part of every AMR observation, so rebuild the
-        # observations after replacing the base world's random pedestrian set.
+        # Plan the first velocity before controllers see the reset observation.
+        self._choose_human_velocities()
         return [self.obs(i) for i in range(self.n)]
 
     def _human_point_is_free(self, point, extra=0.0):
         radius = HUMAN_RADIUS + float(extra)
-        if abs(float(point[0])) > WORLD - radius:
+        # Stay within the base world's 8.8 m pedestrian reflection envelope so
+        # the inherited step never performs an abrupt wall bounce.
+        walk_limit = min(WORLD - radius, 8.75)
+        if abs(float(point[0])) > walk_limit:
             return False
-        if abs(float(point[1])) > WORLD - radius:
+        if abs(float(point[1])) > walk_limit:
             return False
         return all(_rect_distance(point, rect) >= radius for rect in SHELVES)
 
@@ -64,10 +66,16 @@ class RealisticHumanWorld(World):
         for idx in range(self.nppl):
             chosen = None
             for _ in range(3000):
-                q = self.rng.uniform(-8.5, 8.5, size=2).astype(np.float32)
+                q = self.rng.uniform(-8.45, 8.45, size=2).astype(np.float32)
                 if not self._human_point_is_free(q, extra=0.08):
                     continue
                 if any(np.linalg.norm(q - p) < HUMAN_MIN_SEPARATION + 0.18 for p in placed):
+                    continue
+                # Real pedestrians should not spawn already overlapping a robot
+                # or directly on top of its immediate start/goal workspace.
+                if any(np.linalg.norm(q - p) < 1.10 for p in self.p):
+                    continue
+                if any(np.linalg.norm(q - g) < 0.75 for g in self.g):
                     continue
                 chosen = q
                 break
@@ -93,11 +101,16 @@ class RealisticHumanWorld(World):
                 other = planned_points[j]
                 required = HUMAN_MIN_SEPARATION
             else:
-                # The unplanned pedestrian can still move toward us by at most
-                # one max-speed step, so reserve that distance now.
                 other = self.hp[j]
                 required = HUMAN_MIN_SEPARATION + max_step
             if np.linalg.norm(next_point - other) < required:
+                return False
+
+        # Reserve enough body space that a human does not walk into an AMR.
+        # Add one small motion allowance because the AMR's next command is not
+        # yet known when this pedestrian velocity is planned.
+        for robot_pos in self.p:
+            if np.linalg.norm(next_point - robot_pos) < HUMAN_AMR_CLEARANCE + 0.10:
                 return False
         return True
 
@@ -105,10 +118,20 @@ class RealisticHumanWorld(World):
         planned_points = [None] * self.nppl
         new_velocities = np.zeros_like(self.hv)
 
-        # A small correlated heading drift gives natural walking rather than
-        # perfectly straight scripted particles while remaining deterministic
-        # under the episode seed.
-        angle_offsets = (0.0, 0.28, -0.28, 0.55, -0.55, 0.85, -0.85, 1.15, -1.15, 1.57, -1.57, math.pi)
+        angle_offsets = (
+            0.0,
+            0.28,
+            -0.28,
+            0.55,
+            -0.55,
+            0.85,
+            -0.85,
+            1.15,
+            -1.15,
+            1.57,
+            -1.57,
+            math.pi,
+        )
         speed_scales = (1.0, 0.82, 0.62, 0.42, 0.0)
 
         for i in range(self.nppl):
@@ -123,9 +146,8 @@ class RealisticHumanWorld(World):
             wander = float(self.rng.normal(0.0, 0.045))
             desired_dir = _rotate(current, wander)
 
-            # Human-human personal-space repulsion biases the preferred heading
-            # before the hard non-overlap check below.
             repulse = np.zeros(2, dtype=np.float32)
+            # Personal-space response to other pedestrians.
             for j in range(self.nppl):
                 if i == j:
                     continue
@@ -133,6 +155,16 @@ class RealisticHumanWorld(World):
                 dist = float(np.linalg.norm(delta))
                 if 1e-6 < dist < 1.35:
                     repulse += (delta / dist) * ((1.35 - dist) / 1.35)
+
+            # Humans also react to moving robots rather than blindly walking
+            # through them. This is deliberately local and reactive; it does
+            # not give either controller future pedestrian knowledge.
+            for robot_pos in self.p:
+                delta = self.hp[i] - robot_pos
+                dist = float(np.linalg.norm(delta))
+                if 1e-6 < dist < 1.75:
+                    repulse += 1.25 * (delta / dist) * ((1.75 - dist) / 1.75)
+
             desired = desired_dir + 0.75 * repulse
             norm = float(np.linalg.norm(desired))
             if norm > 1e-6:
@@ -140,7 +172,9 @@ class RealisticHumanWorld(World):
             else:
                 desired = desired_dir
 
-            target_speed = float(np.clip(self._human_preferred_speed[i], HUMAN_MIN_SPEED, HUMAN_MAX_SPEED))
+            target_speed = float(
+                np.clip(self._human_preferred_speed[i], HUMAN_MIN_SPEED, HUMAN_MAX_SPEED)
+            )
             best_velocity = np.zeros(2, dtype=np.float32)
             best_point = self.hp[i].copy()
             best_score = -float("inf")
@@ -153,8 +187,6 @@ class RealisticHumanWorld(World):
                     next_point = self.hp[i] + velocity * DT
                     if not self._candidate_is_safe(i, next_point, planned_points):
                         continue
-                    # Prefer the intended heading and normal human walking speed;
-                    # still allow slowing/stopping when an aisle interaction is tight.
                     alignment = float(np.dot(direction, desired))
                     score = 2.0 * alignment + 0.75 * scale
                     if score > best_score:
@@ -168,8 +200,13 @@ class RealisticHumanWorld(World):
         self.hv = new_velocities
 
     def step(self, actions, use_cbf=True):
+        # Use the velocity visible to the controllers for this world tick.
+        obs, rewards, done = super().step(actions, use_cbf)
+        # Then plan the next pedestrian velocity and rebuild observations so
+        # SAC and ORCA see the velocity that will actually be used next tick.
         self._choose_human_velocities()
-        return super().step(actions, use_cbf)
+        obs = [self.obs(i) for i in range(self.n)]
+        return obs, rewards, done
 
 
 def _snapshot(w):
@@ -236,14 +273,21 @@ def _summary(w, diagnostics=None):
         "interventions": int(w.interventions.sum()),
     }
     if diagnostics is not None:
-        out["orca_constraints_total"] = int(sum(d.get("orca_constraints_total", 0) for d in diagnostics))
-        out["stop_yield_ticks"] = int(sum(d.get("stop_yield_ticks", 0) for d in diagnostics))
-        out["recovery_count"] = int(sum(d.get("recovery_count", 0) for d in diagnostics))
+        out["orca_constraints_total"] = int(
+            sum(d.get("orca_constraints_total", 0) for d in diagnostics)
+        )
+        out["stop_yield_ticks"] = int(
+            sum(d.get("stop_yield_ticks", 0) for d in diagnostics)
+        )
+        out["recovery_count"] = int(
+            sum(d.get("recovery_count", 0) for d in diagnostics)
+        )
     return out
 
 
 def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.animation import FFMpegWriter
@@ -260,17 +304,32 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     ax.grid(True, linewidth=0.35, alpha=0.35)
 
     for x0, y0, x1, y1 in SHELVES:
-        ax.add_patch(Rectangle((x0, y0), x1-x0, y1-y0, facecolor="0.35", edgecolor="0.15", alpha=0.85))
+        ax.add_patch(
+            Rectangle(
+                (x0, y0),
+                x1 - x0,
+                y1 - y0,
+                facecolor="0.35",
+                edgecolor="0.15",
+                alpha=0.85,
+            )
+        )
 
     markers = ["o", "s", "^", "D"]
     for i, g in enumerate(goals):
         ax.scatter([g[0]], [g[1]], marker="*", s=130, label=f"Goal {i+1}")
 
-    robot_pts = [ax.plot([], [], markers[i], markersize=10, label=f"AMR {i+1}")[0] for i in range(4)]
+    robot_pts = [
+        ax.plot([], [], markers[i], markersize=10, label=f"AMR {i+1}")[0]
+        for i in range(4)
+    ]
     heading_lines = [ax.plot([], [], linewidth=2)[0] for _ in range(4)]
     trails = [ax.plot([], [], linewidth=1.3, alpha=0.7)[0] for _ in range(4)]
     human_pts = ax.scatter([], [], marker="o", s=45, label="Humans")
-    human_heading = [ax.plot([], [], linewidth=0.8, alpha=0.75)[0] for _ in range(len(frames[0]["hp"]))]
+    human_heading = [
+        ax.plot([], [], linewidth=0.8, alpha=0.75)[0]
+        for _ in range(len(frames[0]["hp"]))
+    ]
     time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
     status_text = ax.text(0.02, 0.94, "", transform=ax.transAxes, va="top")
     ax.legend(loc="lower right", fontsize=7, ncol=2)
@@ -278,8 +337,8 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     history = [[] for _ in range(4)]
     writer = FFMpegWriter(fps=10, metadata={"title": title}, bitrate=2600)
     chosen = list(range(0, len(frames), max(1, stride)))
-    if chosen[-1] != len(frames)-1:
-        chosen.append(len(frames)-1)
+    if chosen[-1] != len(frames) - 1:
+        chosen.append(len(frames) - 1)
 
     with writer.saving(fig, str(outfile), dpi=120):
         for k in chosen:
@@ -304,12 +363,16 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
                     end = hp[j] + 0.35 * direction
                 else:
                     end = hp[j]
-                human_heading[j].set_data([hp[j, 0], end[0]], [hp[j, 1], end[1]])
+                human_heading[j].set_data(
+                    [hp[j, 0], end[0]], [hp[j, 1], end[1]]
+                )
 
             t = k * DT
             time_text.set_text(f"sim time: {t:5.1f} s")
             done = int(np.sum(f["done"] & ~f["hit"]))
-            status_text.set_text(f"successful AMRs: {done}/4 | humans: {len(hp)}")
+            status_text.set_text(
+                f"successful AMRs: {done}/4 | humans: {len(hp)}"
+            )
             writer.grab_frame()
     plt.close(fig)
 
@@ -339,18 +402,25 @@ def main():
     actor.load_state_dict(ck["actor"])
     actor.eval()
 
-    sac_w, sac_frames = _run_sac(actor, args.seed, args.humans, args.realistic_humans)
-    orca_w, orca_frames, diagnostics = _run_orca(config, args.seed, args.humans, args.realistic_humans)
+    sac_w, sac_frames = _run_sac(
+        actor, args.seed, args.humans, args.realistic_humans
+    )
+    orca_w, orca_frames, diagnostics = _run_orca(
+        config, args.seed, args.humans, args.realistic_humans
+    )
     sac = _summary(sac_w)
     orca = _summary(orca_w, diagnostics)
     shared = bool(sac["fleet_success"] and orca["fleet_success"])
 
     if shared:
-        clearance = min(float(sac["min_clearance"]), float(orca["min_clearance"]))
+        clearance = min(
+            float(sac["min_clearance"]), float(orca["min_clearance"])
+        )
         complexity = (
             -clearance,
             max(int(sac["steps"]), int(orca["steps"])),
-            int(sac["interventions"]) + int(orca.get("orca_constraints_total", 0)),
+            int(sac["interventions"])
+            + int(orca.get("orca_constraints_total", 0)),
         )
     else:
         complexity = None
@@ -358,9 +428,18 @@ def main():
     meta = {
         "seed": args.seed,
         "humans": args.humans,
-        "human_model": "realistic_collision_aware" if args.realistic_humans else "legacy_linear",
+        "human_model": (
+            "realistic_collision_aware"
+            if args.realistic_humans
+            else "legacy_linear"
+        ),
         "human_radius": HUMAN_RADIUS if args.realistic_humans else None,
-        "human_min_separation": HUMAN_MIN_SEPARATION if args.realistic_humans else None,
+        "human_min_separation": (
+            HUMAN_MIN_SEPARATION if args.realistic_humans else None
+        ),
+        "human_amr_clearance": (
+            HUMAN_AMR_CLEARANCE if args.realistic_humans else None
+        ),
         "shared_fleet_success": shared,
         "sac_cbf": sac,
         "peak_orca_dd": orca,
