@@ -22,11 +22,11 @@ def _snapshot(w):
     }
 
 
-def _run_sac(actor, seed: int):
+def _run_sac(actor, seed: int, humans: int):
     import torch
     from benchmark.train_multi_agent_research import World
 
-    w = World(4, 6, seed)
+    w = World(4, humans, seed)
     obs = w.reset()
     frames = [_snapshot(w)]
     for _ in range(600):
@@ -41,10 +41,10 @@ def _run_sac(actor, seed: int):
     return w, frames
 
 
-def _run_orca(config, seed: int):
+def _run_orca(config, seed: int, humans: int):
     from benchmark.train_multi_agent_research import World
 
-    w = World(4, 6, seed)
+    w = World(4, humans, seed)
     w.reset()
     ctrls = [AStarORCADD(w, i, config) for i in range(4)]
     frames = [_snapshot(w)]
@@ -84,8 +84,8 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.animation import FFMpegWriter
-    from matplotlib.patches import Circle, Rectangle
-    from benchmark.train_multi_agent_research import SHELVES, WORLD, ROBOT_R, DT
+    from matplotlib.patches import Rectangle
+    from benchmark.train_multi_agent_research import SHELVES, WORLD, DT
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 8), dpi=120)
@@ -107,7 +107,7 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
     robot_pts = [ax.plot([], [], markers[i], markersize=10, label=f"AMR {i+1}")[0] for i in range(4)]
     heading_lines = [ax.plot([], [], linewidth=2)[0] for _ in range(4)]
     trails = [ax.plot([], [], linewidth=1.3, alpha=0.7)[0] for _ in range(4)]
-    human_pts = ax.plot([], [], "x", markersize=7, label="Humans")[0]
+    human_pts = ax.plot([], [], "x", markersize=6, label="Humans")[0]
     time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
     status_text = ax.text(0.02, 0.94, "", transform=ax.transAxes, va="top")
     ax.legend(loc="lower right", fontsize=7, ncol=2)
@@ -135,7 +135,7 @@ def _render(frames, goals, title: str, outfile: Path, stride: int = 3):
             t = k * DT
             time_text.set_text(f"sim time: {t:5.1f} s")
             done = int(np.sum(f["done"] & ~f["hit"]))
-            status_text.set_text(f"successful AMRs: {done}/4")
+            status_text.set_text(f"successful AMRs: {done}/4 | humans: {len(hp)}")
             writer.grab_frame()
     plt.close(fig)
 
@@ -146,10 +146,14 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--humans", type=int, default=6)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+
+    if args.humans < 1:
+        raise ValueError("--humans must be >= 1")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -160,14 +164,12 @@ def main():
     actor.load_state_dict(ck["actor"])
     actor.eval()
 
-    sac_w, sac_frames = _run_sac(actor, args.seed)
-    orca_w, orca_frames, diagnostics = _run_orca(config, args.seed)
+    sac_w, sac_frames = _run_sac(actor, args.seed, args.humans)
+    orca_w, orca_frames, diagnostics = _run_orca(config, args.seed, args.humans)
     sac = _summary(sac_w)
     orca = _summary(orca_w, diagnostics)
     shared = bool(sac["fleet_success"] and orca["fleet_success"])
 
-    # Complexity ranking among shared-success cases: smallest clearance first,
-    # then longer joint completion, then more safety/avoidance activity.
     if shared:
         clearance = min(float(sac["min_clearance"]), float(orca["min_clearance"]))
         complexity = (
@@ -180,6 +182,7 @@ def main():
 
     meta = {
         "seed": args.seed,
+        "humans": args.humans,
         "shared_fleet_success": shared,
         "sac_cbf": sac,
         "peak_orca_dd": orca,
@@ -192,8 +195,18 @@ def main():
     if not shared:
         return
 
-    _render(sac_frames, sac_w.g, f"4-AMR SAC+CBF — seed {args.seed}", out / "sac_cbf.mp4")
-    _render(orca_frames, orca_w.g, f"4-AMR Peak ORCA-DD — seed {args.seed}", out / "peak_orca_dd.mp4")
+    _render(
+        sac_frames,
+        sac_w.g,
+        f"4-AMR SAC+CBF — {args.humans} humans — seed {args.seed}",
+        out / "sac_cbf.mp4",
+    )
+    _render(
+        orca_frames,
+        orca_w.g,
+        f"4-AMR Peak ORCA-DD — {args.humans} humans — seed {args.seed}",
+        out / "peak_orca_dd.mp4",
+    )
 
 
 if __name__ == "__main__":
