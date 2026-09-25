@@ -33,8 +33,13 @@ def scenario_catalog() -> tuple[ScenarioSpec, ...]:
     )
 
 
+def development_evaluation_seeds() -> tuple[int, ...]:
+    """Development-only screening seeds never used for gradient training."""
+    return tuple(range(10300, 10320))
+
+
 def split_seed_sets(*, frozen: bool):
-    """Return disjoint development/validation seeds and gated final holdout."""
+    """Return disjoint training-development, validation and gated holdout seeds."""
     dev = tuple(range(10100, 10120))
     validation = tuple(range(11100, 11120))
     holdout = tuple(range(13100, 13130)) if frozen else tuple()
