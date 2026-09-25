@@ -5,6 +5,7 @@ on:
     branches: [research/beast-baselines-v1]
     paths:
       - 'tests/test_intent_shift_benchmark.py'
+      - 'tests/test_observable_adaptive_orca.py'
       - 'benchmark/intent_shift_benchmark.py'
       - '.github/workflows/intent-shift-ci.yml'
   workflow_dispatch:
@@ -26,4 +27,4 @@ jobs:
           pip install 'numpy<2.0' scipy cvxpy osqp matplotlib pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run regression
-        run: pytest -q tests/test_intent_shift_benchmark.py
+        run: pytest -q tests/test_intent_shift_benchmark.py tests/test_observable_adaptive_orca.py
