@@ -34,7 +34,7 @@ class AdaptiveORCAExtras:
 class IntentShiftWorld(RealisticHumanWorld):
     """Physically valid pedestrians with latent, discontinuous intent changes.
 
-    Human bodies still obey the realistic-human collision constraints.  The
+    Human bodies still obey the realistic-human collision constraints. The
     difference is behavioral: pedestrians periodically stop, turn, reverse,
     or become non-yielding, making instantaneous velocity a less reliable
     predictor of near-future motion.
@@ -67,7 +67,6 @@ class IntentShiftWorld(RealisticHumanWorld):
         return obs
 
     def _activate_intent(self, i):
-        # Weighted toward realistic stop/turn events; reversals/non-yielding are rarer.
         mode = int(self.rng.choice(
             [self.STOP, self.TURN, self.REVERSE, self.NONYIELD],
             p=[0.34, 0.36, 0.14, 0.16],
@@ -104,7 +103,6 @@ class IntentShiftWorld(RealisticHumanWorld):
                 self.human_uncertainty[i] *= 0.94
 
     def _choose_human_velocities(self):
-        # During construction/reset, intent arrays are already initialized.
         planned_points = [None] * self.nppl
         new_velocities = np.zeros_like(self.hv)
         angle_offsets = (
@@ -129,7 +127,6 @@ class IntentShiftWorld(RealisticHumanWorld):
 
             if mode in (self.TURN, self.REVERSE):
                 direction = _rotate(direction, float(self._intent_turn_angle[i]))
-                # Apply the abrupt intent once, then continue along the new heading.
                 self._intent_turn_angle[i] = 0.0
                 if mode == self.REVERSE:
                     self.intent_mode[i] = self.NONYIELD
@@ -145,8 +142,6 @@ class IntentShiftWorld(RealisticHumanWorld):
                 if 1e-6 < dist < 1.35:
                     repulse += (delta / dist) * ((1.35 - dist) / 1.35)
 
-            # Non-yielding humans do not voluntarily steer around AMRs, though
-            # hard body-space checks below still prevent physically impossible overlap.
             if mode != self.NONYIELD:
                 for robot_pos in self.p:
                     delta = self.hp[i] - robot_pos
@@ -170,7 +165,6 @@ class IntentShiftWorld(RealisticHumanWorld):
                     if not self._candidate_is_safe(i, nxt, planned_points):
                         continue
                     align = float(np.dot(d, desired))
-                    # Non-yielding humans strongly prefer maintaining intent/speed.
                     speed_weight = 1.05 if mode == self.NONYIELD else 0.75
                     score = 2.0 * align + speed_weight * scale
                     if score > best_score:
@@ -182,7 +176,6 @@ class IntentShiftWorld(RealisticHumanWorld):
         self.hv = new_velocities
 
     def step(self, actions, use_cbf=True):
-        # Execute the velocity that was visible to controllers for this tick.
         obs, rewards, done = super(RealisticHumanWorld, self).step(actions, use_cbf)
         self._update_intents()
         self._choose_human_velocities()
@@ -191,27 +184,59 @@ class IntentShiftWorld(RealisticHumanWorld):
 
 
 class AdaptiveORCADD(AStarORCADD):
-    """Peak ORCA-DD with uncertainty-adaptive human constraints."""
+    """Peak ORCA-DD with observable-motion uncertainty adaptation.
+
+    No latent intent label or environment-owned uncertainty variable is used.
+    Uncertainty is estimated independently by each controller from consecutive
+    observed pedestrian velocity vectors, which is information available to a
+    real robot tracker.
+    """
 
     def __init__(self, world, i: int, config: BeastORCAConfig | None = None, extras: AdaptiveORCAExtras | None = None):
         self.extras = extras or AdaptiveORCAExtras()
         self.max_human_time_horizon = self.extras.max_human_time_horizon
+        self._last_human_velocity = np.asarray(world.hv, dtype=float).copy()
+        self._observed_human_uncertainty = np.zeros(world.nppl, dtype=float)
         super().__init__(world, i, config)
 
+    def _update_observed_human_uncertainty(self, w):
+        current = np.asarray(w.hv, dtype=float)
+        if self._last_human_velocity.shape != current.shape:
+            self._last_human_velocity = current.copy()
+            self._observed_human_uncertainty = np.zeros(w.nppl, dtype=float)
+            return
+
+        # Visible acceleration/heading change is the uncertainty cue. A roughly
+        # 0.45 m/s one-tick velocity change saturates the detector; the state
+        # then decays so one abrupt turn remains influential for several ticks.
+        delta_v = np.linalg.norm(current - self._last_human_velocity, axis=1)
+        innovation = np.clip(delta_v / 0.45, 0.0, 1.0)
+        self._observed_human_uncertainty = np.maximum(
+            0.82 * self._observed_human_uncertainty,
+            innovation,
+        )
+        self._last_human_velocity = current.copy()
+
     def _human_time_horizon(self, w, j):
-        u = float(getattr(w, 'human_uncertainty', np.zeros(w.nppl))[j])
-        return float(min(self.max_human_time_horizon, self.cfg.time_horizon * (1.0 + self.extras.horizon_gain * u)))
+        u = float(self._observed_human_uncertainty[j])
+        return float(min(
+            self.max_human_time_horizon,
+            self.cfg.time_horizon * (1.0 + self.extras.horizon_gain * u),
+        ))
 
     def _human_margin(self, w, j):
-        u = float(getattr(w, 'human_uncertainty', np.zeros(w.nppl))[j])
-        return float(self.cfg.human_margin + min(self.extras.max_human_margin_add, self.extras.margin_gain * u))
+        u = float(self._observed_human_uncertainty[j])
+        return float(self.cfg.human_margin + min(
+            self.extras.max_human_margin_add,
+            self.extras.margin_gain * u,
+        ))
 
     def _absolute_orca_lines(self, w, current_vel):
+        self._update_observed_human_uncertainty(w)
         i = self.i
         p = np.asarray(w.p[i], dtype=float)
         lines = []
 
-        # Keep the proven peer-to-peer Peak ORCA behavior unchanged.
         for j in range(w.n):
             if j == i or w.done[j]:
                 continue
@@ -230,7 +255,7 @@ class AdaptiveORCADD(AStarORCADD):
         for j in range(w.nppl):
             q = np.asarray(w.hp[j], dtype=float)
             delta = q - p
-            u = float(getattr(w, 'human_uncertainty', np.zeros(w.nppl))[j])
+            u = float(self._observed_human_uncertainty[j])
             neighbor_distance = self.cfg.neighbor_distance + self.extras.neighbor_gain * u
             if float(np.linalg.norm(delta)) > neighbor_distance:
                 continue
