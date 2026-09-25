@@ -1,0 +1,133 @@
+name: Human Stress Sweeps
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/human_sweep_experiment.py"
+      - ".github/workflows/human-stress-sweeps.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        scenario:
+          - baseline
+          - count_15
+          - count_19
+          - count_24
+          - speed_1.25
+          - speed_1.50
+          - speed_1.75
+          - randomness_low
+          - randomness_medium
+          - randomness_high
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Download exact Run 11 SAC+CBF checkpoint
+        run: |
+          mkdir -p results/run11
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/NikhileshRSahu/safe-rl-amr-cbf/actions/artifacts/10613786048/zip" \
+            -o /tmp/run11.zip
+          unzip -oq /tmp/run11.zip -d results/run11
+          test -f results/run11/shared_sac_cbf.pt
+      - name: Run paired five-seed stress scenario
+        run: |
+          mkdir -p results/human_stress
+          python benchmark/human_sweep_experiment.py \
+            --scenario "${{ matrix.scenario }}" \
+            --seeds 8100,8101,8102,8103,8104 \
+            --checkpoint results/run11/shared_sac_cbf.pt \
+            --config benchmark/frozen_peak_orca_config.json \
+            --out "results/human_stress/${{ matrix.scenario }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: human-stress-${{ matrix.scenario }}
+          path: results/human_stress/${{ matrix.scenario }}.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: scenario
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: human-stress-*
+          path: gathered
+          merge-multiple: true
+      - name: Compile JSON CSV and Markdown
+        run: |
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+
+          files = sorted(Path('gathered').glob('*.json'))
+          if not files:
+              raise SystemExit('no scenario results found')
+          data = {p.stem: json.loads(p.read_text()) for p in files}
+          Path('compiled').mkdir()
+          Path('compiled/human_stress_summary.json').write_text(json.dumps(data, indent=2))
+
+          fields = [
+              'scenario','family','humans','speed_scale','randomness_level','controller',
+              'success_rate','collision_rate','timeout_rate','fleet_success_rate',
+              'mean_traversal_time_success','mean_path_length_success','mean_throughput_per_min',
+              'mean_cbf_interventions','mean_orca_constraints','mean_stop_yield_ticks','mean_recovery_count'
+          ]
+          rows=[]
+          for name,payload in data.items():
+              s=payload['scenario']
+              for key,label in [('sac_cbf','SAC+CBF'),('peak_orca_dd','Peak ORCA-DD')]:
+                  m=payload[key]
+                  rows.append({
+                      'scenario':name,'family':s['family'],'humans':s['humans'],
+                      'speed_scale':s['speed_scale'],'randomness_level':s['randomness_level'],
+                      'controller':label, **{k:m.get(k) for k in fields[6:]}
+                  })
+          with open('compiled/human_stress_summary.csv','w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+
+          order=['baseline','count_15','count_19','count_24','speed_1.25','speed_1.50','speed_1.75','randomness_low','randomness_medium','randomness_high']
+          lines=['# Human Stress Sweep Results','',
+                 '| Scenario | Controller | Success | Collision | Timeout | Fleet success | Traversal s | Path m | Throughput/min |',
+                 '|---|---|---:|---:|---:|---:|---:|---:|---:|']
+          for name in order:
+              if name not in data: continue
+              for key,label in [('sac_cbf','SAC+CBF'),('peak_orca_dd','Peak ORCA-DD')]:
+                  m=data[name][key]
+                  def pct(v): return f'{100*v:.1f}%'
+                  def num(v): return '—' if v is None else f'{v:.2f}'
+                  lines.append(f"| {name} | {label} | {pct(m['success_rate'])} | {pct(m['collision_rate'])} | {pct(m['timeout_rate'])} | {pct(m['fleet_success_rate'])} | {num(m['mean_traversal_time_success'])} | {num(m['mean_path_length_success'])} | {num(m['mean_throughput_per_min'])} |")
+          Path('compiled/human_stress_summary.md').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: human-stress-compiled-results
+          path: compiled/
+          if-no-files-found: error
