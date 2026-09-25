@@ -29,6 +29,7 @@ def training_curriculum() -> tuple[ScenarioSpec, ...]:
     """Warehouse scenarios available to the learner before validation freeze."""
     wanted = {
         "cross_intersection",
+        "shelf_corner",
         "hesitation",
         "mixed_behavior",
         "density_06",
@@ -37,6 +38,14 @@ def training_curriculum() -> tuple[ScenarioSpec, ...]:
         "density_24",
     }
     return tuple(s for s in scenario_catalog() if s.name in wanted)
+
+
+def training_seed_for_episode(episode_index: int) -> int:
+    """Map every training episode strictly into the predeclared development set."""
+    dev_seeds, _, _ = split_seed_sets(frozen=False)
+    if not dev_seeds:
+        raise RuntimeError("development seed set is empty")
+    return int(dev_seeds[int(episode_index) % len(dev_seeds)])
 
 
 def _default_orca_config():
@@ -111,9 +120,6 @@ def collect_training_episode(
                 v_max=VMAX,
                 omega_max=WMAX,
             )
-            # Parent ORCA action() already returns normalized [v,omega]
-            # commands in this benchmark. Re-normalizing through the physical
-            # interpretation above preserves the exact same actor convention.
             teacher_action = np.asarray(physical_teacher, dtype=np.float32)
             teacher_action = np.clip(teacher_action, -1.0, 1.0)
 
@@ -171,7 +177,7 @@ def train_stasac(
     agent_steps: int,
     seed: int,
     out_dir: str | Path,
-    max_episode_steps: int = 240,
+    max_episode_steps: int = 600,
     burn_in: int = 4,
     train_len: int = 8,
     batch_size: int = 8,
@@ -192,7 +198,6 @@ def train_stasac(
     replay = SequenceReplay(capacity_episodes=512, burn_in=burn_in, train_len=train_len)
 
     curriculum = training_curriculum()
-    dev_seeds, _, _ = split_seed_sets(frozen=False)
     total_target = max(1, int(agent_steps))
     global_agent_steps = 0
     episode_index = 0
@@ -202,7 +207,7 @@ def train_stasac(
 
     while global_agent_steps < total_target:
         spec = curriculum[episode_index % len(curriculum)]
-        dev_seed = dev_seeds[episode_index % len(dev_seeds)] + 1000 * (episode_index // len(dev_seeds))
+        dev_seed = training_seed_for_episode(episode_index)
         coeff = bc_coefficient(global_agent_steps, total_target)
         episode = collect_training_episode(
             actor,
@@ -261,6 +266,7 @@ def train_stasac(
         "teacher_warm_fraction": 0.15,
         "final_bc_coefficient": bc_coefficient(global_agent_steps, total_target),
         "training_seed_split": "development_only",
+        "max_episode_steps": int(max_episode_steps),
     }
     save_stasac_checkpoint(out / "stasac_cbf.pt", actor, q, metadata=metadata)
     payload = {"metadata": metadata, "episodes": logs}
@@ -273,7 +279,7 @@ def main():
     ap.add_argument("--agent-steps", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=71)
     ap.add_argument("--out", default="results/stasac_smoke")
-    ap.add_argument("--max-episode-steps", type=int, default=120)
+    ap.add_argument("--max-episode-steps", type=int, default=600)
     ap.add_argument("--burn-in", type=int, default=4)
     ap.add_argument("--train-len", type=int, default=8)
     ap.add_argument("--batch-size", type=int, default=8)
