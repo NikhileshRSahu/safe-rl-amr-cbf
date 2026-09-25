@@ -36,14 +36,16 @@ def test_intent_shift_world_is_deterministic_for_same_seed():
     assert a.intent_change_count > 0
 
 
-def test_adaptive_orca_increases_prediction_horizon_for_uncertain_human():
+def test_adaptive_orca_increases_prediction_horizon_after_observed_velocity_change():
     cfg = load_beast_config('benchmark/frozen_peak_orca_config.json')
     w = IntentShiftWorld(4, 12, 13001)
     w.reset()
     c = AdaptiveORCADD(w, 0, cfg)
     base = cfg.time_horizon
+    c._update_observed_human_uncertainty(w)
     calm = c._human_time_horizon(w, 0)
-    w.human_uncertainty[0] = 1.0
+    w.hv[0] = -w.hv[0]
+    c._update_observed_human_uncertainty(w)
     uncertain = c._human_time_horizon(w, 0)
     assert calm >= base
     assert uncertain > calm
