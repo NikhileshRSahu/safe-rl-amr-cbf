@@ -1,0 +1,67 @@
+name: STASAC Warehouse Smoke Train
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/stasac_training_runner.py"
+      - "benchmark/stasac_warehouse.py"
+      - "benchmark/spatiotemporal_policy.py"
+      - "benchmark/train_stasac_cbf.py"
+      - "benchmark/orca_teacher.py"
+      - "benchmark/adaptive_predictive_orca.py"
+      - ".github/workflows/stasac-smoke-train.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Train real warehouse smoke policy
+        run: |
+          python -m benchmark.stasac_training_runner \
+            --agent-steps 2000 \
+            --seed 71 \
+            --out results/stasac_smoke \
+            --max-episode-steps 120 \
+            --burn-in 4 \
+            --train-len 8 \
+            --batch-size 8
+      - name: Verify checkpoint and training contract
+        run: |
+          python - <<'PY'
+          import json, math, torch
+          from pathlib import Path
+          root=Path('results/stasac_smoke')
+          summary=json.loads((root/'summary.json').read_text())
+          m=summary['metadata']
+          assert m['agent_steps'] >= 2000, m
+          assert m['updates'] > 0, m
+          assert m['final_bc_coefficient'] == 0.0, m
+          assert m['training_seed_split'] == 'development_only', m
+          ck=torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
+          assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_v1'
+          for tensor in ck['actor'].values():
+              assert torch.isfinite(tensor).all()
+          print(json.dumps(m, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stasac-smoke-seed71
+          path: results/stasac_smoke/
+          if-no-files-found: error
