@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from benchmark.best_vs_best_protocol import ScenarioSpec
+from benchmark.shared_warehouse_perception import visible_with_shelves
 from benchmark.stasac_warehouse import (
     EGO_DIM,
     WarehouseObservationBuilder,
@@ -9,21 +10,46 @@ from benchmark.stasac_warehouse import (
     rollout_untrained_actor_smoke,
 )
 from benchmark.spatiotemporal_policy import STASACActor
+from benchmark.train_multi_agent_research import SHELVES
 from benchmark.warehouse_interaction_features import FEATURE_DIM
 
 
-def test_observation_builder_has_fixed_ego_width_and_keeps_all_nearby_entities():
+def test_observation_builder_has_fixed_ego_width_and_keeps_all_visible_entities_without_slot_cap():
     spec = ScenarioSpec("mixed_behavior", "mixed", humans=12, n_amr=4, randomness_level="high")
     world = make_training_world(spec, seed=10101)
     builder = WarehouseObservationBuilder(world, perception_range=100.0)
     ego, entity_batch = builder.observe(world, 0, now=0.0)
     assert ego.shape == (EGO_DIM,)
     assert entity_batch.features.shape[1] == FEATURE_DIM
-    # 3 peer AMRs + all 12 humans: no fixed four-human bottleneck.
-    assert entity_batch.features.shape[0] == 15
+
+    visible_humans = sum(
+        visible_with_shelves(
+            world.p[0], world.hp[j], SHELVES,
+            max_range=100.0, shelf_padding=0.02,
+        )
+        for j in range(world.nppl)
+    )
+    expected_entities = (world.n - 1) + visible_humans
+    assert entity_batch.features.shape[0] == expected_entities
     assert entity_batch.mask.all()
     assert np.isfinite(ego).all()
     assert np.isfinite(entity_batch.features).all()
+
+
+def test_observation_builder_has_no_fixed_four_human_bottleneck_when_six_are_visible():
+    spec = ScenarioSpec("density_06", "density", humans=6, n_amr=4, randomness_level="baseline")
+    world = make_training_world(spec, seed=10111)
+    # Place six humans in the open horizontal corridor, all visible from AMR 1.
+    world.p[1] = np.array([-9.0, 0.0], dtype=np.float32)
+    world.hp[:] = np.array([
+        [-7.8, -1.2], [-7.2, -0.7], [-6.7, 0.0],
+        [-5.9, 0.6], [-5.2, 1.1], [-4.5, -1.0],
+    ], dtype=np.float32)
+    world.hv[:] = 0.0
+    builder = WarehouseObservationBuilder(world, perception_range=10.0)
+    _, entity_batch = builder.observe(world, 1, now=0.0)
+    human_ids = [eid for eid in entity_batch.entity_ids if eid.startswith("human-")]
+    assert len(human_ids) == 6
 
 
 def test_observation_history_is_causal_and_acceleration_channels_change_after_motion():
