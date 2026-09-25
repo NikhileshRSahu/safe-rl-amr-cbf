@@ -1,0 +1,45 @@
+name: Progressive VO RVO ORCA
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/progressive_velocity_baselines.py"
+      - "benchmark/evaluate_progressive_ladder.py"
+      - "benchmark/frozen_peak_orca_config.json"
+      - ".github/workflows/progressive-vo-rvo-orca.yml"
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [reciprocal_crossing, dense_reciprocal]
+        controller: [vo, rvo, orca]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run ten-seed paired classical progression
+        run: |
+          mkdir -p results/progressive
+          python benchmark/evaluate_progressive_ladder.py \
+            --scenario "${{ matrix.scenario }}" \
+            --controller "${{ matrix.controller }}" \
+            --config benchmark/frozen_peak_orca_config.json \
+            --out "results/progressive/${{ matrix.scenario }}-${{ matrix.controller }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: progressive-${{ matrix.scenario }}-${{ matrix.controller }}
+          path: results/progressive/*.json
