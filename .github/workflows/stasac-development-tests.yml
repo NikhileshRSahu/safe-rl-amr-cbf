@@ -8,6 +8,7 @@ on:
       - "benchmark/spatiotemporal_policy.py"
       - "benchmark/train_stasac_cbf.py"
       - "benchmark/stasac_warehouse.py"
+      - "benchmark/stasac_training_runner.py"
       - "benchmark/orca_teacher.py"
       - "benchmark/adaptive_predictive_orca.py"
       - "benchmark/best_vs_best_protocol.py"
@@ -15,6 +16,7 @@ on:
       - "tests/test_spatiotemporal_policy.py"
       - "tests/test_stasac_training.py"
       - "tests/test_stasac_warehouse.py"
+      - "tests/test_stasac_training_runner.py"
       - "tests/test_orca_teacher_warmstart.py"
       - "tests/test_best_vs_best_protocol.py"
       - ".github/workflows/stasac-development-tests.yml"
@@ -46,5 +48,6 @@ jobs:
             $(test -f tests/test_spatiotemporal_policy.py && echo tests/test_spatiotemporal_policy.py) \
             $(test -f tests/test_stasac_training.py && echo tests/test_stasac_training.py) \
             $(test -f tests/test_stasac_warehouse.py && echo tests/test_stasac_warehouse.py) \
+            $(test -f tests/test_stasac_training_runner.py && echo tests/test_stasac_training_runner.py) \
             $(test -f tests/test_orca_teacher_warmstart.py && echo tests/test_orca_teacher_warmstart.py) \
             $(test -f tests/test_best_vs_best_protocol.py && echo tests/test_best_vs_best_protocol.py)
