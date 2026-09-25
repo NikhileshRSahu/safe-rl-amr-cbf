@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+
+import numpy as np
+
+from benchmark.beast_classical import AStarORCADD, BeastORCAConfig
+from benchmark.orca_geometry import OrcaLine, build_orca_line
+from benchmark.train_multi_agent_research import DT, ROBOT_R, VMAX
+from benchmark.warehouse_interaction_features import compute_ttc_cpa
+
+
+@dataclass
+class AdaptiveORCAConfig:
+    horizon_min: float = 1.0
+    horizon_max: float = 4.0
+    uncertainty_gain: float = 0.35
+    max_uncertainty_extra: float = 0.40
+    base_uncertainty: float = 0.02
+    acceleration_scale: float = 0.20
+    heading_rate_scale: float = 0.12
+    density_scale: float = 0.06
+    yield_relief_ticks: float = 30.0
+    min_human_responsibility: float = 0.75
+
+
+def adaptive_time_horizon(
+    *,
+    ttc: float,
+    uncertainty: float,
+    density: int,
+    yield_streak: int,
+    config: AdaptiveORCAConfig,
+) -> float:
+    """Choose a bounded prediction horizon from causal interaction evidence.
+
+    Low uncertainty and imminent collision permit longer prediction. High
+    uncertainty, crowd density and repeated yielding shorten the horizon so
+    the feasible velocity set does not become unnecessarily over-constrained.
+    """
+    lo = float(config.horizon_min)
+    hi = float(config.horizon_max)
+    if not (0.0 < lo <= hi):
+        raise ValueError("invalid adaptive horizon bounds")
+    uncertainty = max(0.0, float(uncertainty))
+    ttc = max(0.0, float(ttc))
+    density = max(0, int(density))
+    yield_streak = max(0, int(yield_streak))
+
+    confidence = math.exp(-uncertainty)
+    urgency = math.exp(-ttc / 2.0)
+    density_relief = 1.0 / (1.0 + config.density_scale * density)
+    yield_relief = 1.0 / (1.0 + yield_streak / max(config.yield_relief_ticks, 1e-6))
+    fraction = confidence * (0.35 + 0.65 * urgency) * density_relief * yield_relief
+    return float(np.clip(lo + (hi - lo) * fraction, lo, hi))
+
+
+def uncertainty_inflation(
+    physical_radius: float,
+    *,
+    sigma: float,
+    gain: float,
+    max_extra: float,
+) -> float:
+    physical_radius = max(0.0, float(physical_radius))
+    sigma = max(0.0, float(sigma))
+    extra = min(max(0.0, float(max_extra)), max(0.0, float(gain)) * sigma)
+    return physical_radius + extra
+
+
+def human_responsibility(observed_yield_probability: float, min_robot_share: float = 0.75) -> float:
+    """Robot share of avoidance responsibility for a human interaction.
+
+    Humans are never assumed to take half responsibility. Even a consistently
+    yielding pedestrian leaves at least 75% of collision avoidance to the AMR.
+    """
+    p = float(np.clip(observed_yield_probability, 0.0, 1.0))
+    lo = float(np.clip(min_robot_share, 0.5, 1.0))
+    return float(np.clip(1.0 - (1.0 - lo) * p, lo, 1.0))
+
+
+def _heading_rate(previous: np.ndarray, current: np.ndarray, dt: float) -> float:
+    ps = float(np.linalg.norm(previous))
+    cs = float(np.linalg.norm(current))
+    if ps < 1e-8 or cs < 1e-8 or dt <= 0.0:
+        return 0.0
+    a = math.atan2(float(previous[1]), float(previous[0]))
+    b = math.atan2(float(current[1]), float(current[0]))
+    delta = (b - a + math.pi) % (2.0 * math.pi) - math.pi
+    return delta / dt
+
+
+class AStarAdaptivePredictiveORCADD(AStarORCADD):
+    """Strong causal ORCA baseline with uncertainty-aware human prediction.
+
+    Global A*, differential-drive realization, replanning and recovery remain
+    identical to Peak ORCA-DD. Only dynamic-human ORCA constraints adapt from
+    observation history; no future trajectory or hidden human intent is used.
+    """
+
+    def __init__(
+        self,
+        world,
+        i: int,
+        config: BeastORCAConfig | None = None,
+        adaptive_config: AdaptiveORCAConfig | None = None,
+    ):
+        super().__init__(world, i, config)
+        self.adaptive_cfg = adaptive_config or AdaptiveORCAConfig()
+        self._prev_human_velocity: dict[int, np.ndarray] = {}
+        self._human_yield_probability: dict[int, float] = {}
+        self._diag.update(
+            adaptive_horizon_sum=0.0,
+            adaptive_horizon_count=0,
+            uncertainty_inflation_sum=0.0,
+            uncertainty_inflation_max=0.0,
+        )
+
+    def _human_motion_estimate(self, j: int, velocity: np.ndarray):
+        current = np.asarray(velocity, dtype=float)
+        previous = self._prev_human_velocity.get(j)
+        self._prev_human_velocity[j] = current.copy()
+        if previous is None:
+            acceleration = np.zeros(2, dtype=float)
+            heading_rate = 0.0
+        else:
+            acceleration = (current - previous) / max(DT, 1e-9)
+            heading_rate = _heading_rate(previous, current, DT)
+        uncertainty = (
+            self.adaptive_cfg.base_uncertainty
+            + self.adaptive_cfg.acceleration_scale * float(np.linalg.norm(acceleration))
+            + self.adaptive_cfg.heading_rate_scale * abs(float(heading_rate))
+        )
+        return acceleration, heading_rate, float(uncertainty)
+
+    def _absolute_orca_lines(self, w, current_vel):
+        i = self.i
+        p = np.asarray(w.p[i], dtype=float)
+        lines: list[OrcaLine] = []
+
+        # AMR-AMR interactions retain the same strong priority-aware reciprocal
+        # handling as Peak ORCA-DD.
+        for j in range(w.n):
+            if j == i or w.done[j]:
+                continue
+            q = np.asarray(w.p[j], dtype=float)
+            delta = q - p
+            if float(np.linalg.norm(delta)) > self.cfg.neighbor_distance:
+                continue
+            other = self._velocity(w, j)
+            rel = other - current_vel
+            responsibility = self._peer_responsibility(w, j)
+            relative_line = build_orca_line(
+                delta,
+                rel,
+                2 * ROBOT_R + self.cfg.peer_margin,
+                self.cfg.time_horizon,
+                responsibility,
+            )
+            lines.append(OrcaLine(point=other - relative_line.point, normal=-relative_line.normal))
+
+        nearby_humans = sum(
+            float(np.linalg.norm(np.asarray(w.hp[j], dtype=float) - p)) <= self.cfg.neighbor_distance
+            for j in range(w.nppl)
+        )
+        for j in range(w.nppl):
+            q = np.asarray(w.hp[j], dtype=float)
+            delta = q - p
+            if float(np.linalg.norm(delta)) > self.cfg.neighbor_distance:
+                continue
+            observed_velocity = np.asarray(w.hv[j], dtype=float)
+            acceleration, _, uncertainty = self._human_motion_estimate(j, observed_velocity)
+            rel = observed_velocity - current_vel
+            ttc, _ = compute_ttc_cpa(delta, rel, horizon=self.adaptive_cfg.horizon_max)
+            horizon = adaptive_time_horizon(
+                ttc=ttc,
+                uncertainty=uncertainty,
+                density=nearby_humans,
+                yield_streak=self.stuck,
+                config=self.adaptive_cfg,
+            )
+
+            # Bounded constant-acceleration estimate: use only causal measured
+            # acceleration and clamp speed to a plausible pedestrian envelope.
+            predicted_velocity = observed_velocity + 0.5 * acceleration * min(horizon, 1.0)
+            speed = float(np.linalg.norm(predicted_velocity))
+            max_human_speed = 1.5
+            if speed > max_human_speed:
+                predicted_velocity *= max_human_speed / speed
+
+            base_radius = 2 * ROBOT_R + self.cfg.human_margin
+            effective_radius = uncertainty_inflation(
+                base_radius,
+                sigma=uncertainty,
+                gain=self.adaptive_cfg.uncertainty_gain,
+                max_extra=self.adaptive_cfg.max_uncertainty_extra,
+            )
+            extra = effective_radius - base_radius
+            yield_p = self._human_yield_probability.get(j, 0.0)
+            responsibility = human_responsibility(
+                yield_p, self.adaptive_cfg.min_human_responsibility
+            )
+            relative_line = build_orca_line(
+                delta,
+                predicted_velocity - current_vel,
+                effective_radius,
+                horizon,
+                responsibility,
+            )
+            lines.append(
+                OrcaLine(
+                    point=predicted_velocity - relative_line.point,
+                    normal=-relative_line.normal,
+                )
+            )
+            self._diag["adaptive_horizon_sum"] += horizon
+            self._diag["adaptive_horizon_count"] += 1
+            self._diag["uncertainty_inflation_sum"] += extra
+            self._diag["uncertainty_inflation_max"] = max(
+                self._diag["uncertainty_inflation_max"], extra
+            )
+
+        self._diag["orca_constraints_total"] += len(lines)
+        return lines
+
+    def diagnostics(self):
+        out = super().diagnostics()
+        n = max(1, int(out.get("adaptive_horizon_count", 0)))
+        out["adaptive_horizon_mean"] = float(out.get("adaptive_horizon_sum", 0.0)) / n
+        return out
