@@ -6,8 +6,10 @@ on:
     paths:
       - "tests/test_realistic_human_demo.py"
       - "tests/test_human_sweep_experiment.py"
+      - "tests/test_progressive_velocity_baselines.py"
       - "benchmark/render_shared_success_case.py"
       - "benchmark/human_sweep_experiment.py"
+      - "benchmark/progressive_velocity_baselines.py"
       - ".github/workflows/realistic-human-demo-ci.yml"
   workflow_dispatch:
 
@@ -27,5 +29,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install "numpy<2.0" scipy cvxpy osqp matplotlib pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Run human simulation regressions
-        run: pytest -q tests/test_realistic_human_demo.py tests/test_human_sweep_experiment.py
+      - name: Run human and progressive-baseline regressions
+        run: pytest -q tests/test_realistic_human_demo.py tests/test_human_sweep_experiment.py tests/test_progressive_velocity_baselines.py
