@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 from typing import Any
-import copy
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from benchmark.orca_teacher import behavior_cloning_loss
 from benchmark.spatiotemporal_policy import STASACActor, TwinRecurrentQ, reset_hidden
 from benchmark.warehouse_interaction_features import FEATURE_DIM
 
@@ -18,6 +18,8 @@ class SequenceReplay:
 
     Episodes are stored independently so sampled windows can never cross reset
     boundaries. Variable entity sets are padded only when a batch is sampled.
+    Optional ORCA teacher actions are stored as training metadata; the actor
+    itself has no runtime dependency on ORCA.
     """
 
     def __init__(self, capacity_episodes: int = 256, burn_in: int = 8, train_len: int = 16):
@@ -40,6 +42,8 @@ class SequenceReplay:
             copied = dict(step)
             for key in ("ego", "entities", "entity_mask", "action", "next_ego", "next_entities", "next_entity_mask"):
                 copied[key] = np.asarray(step[key]).copy()
+            if "teacher_action" in step and step["teacher_action"] is not None:
+                copied["teacher_action"] = np.asarray(step["teacher_action"], dtype=np.float32).copy()
             copied["reward"] = float(step["reward"])
             copied["done"] = bool(step["done"])
             episode.append(copied)
@@ -65,9 +69,11 @@ class SequenceReplay:
         l = self.window_len
         ego_dim = int(np.asarray(windows[0][0]["ego"]).shape[-1])
         max_n = 0
+        has_teacher = False
         for window in windows:
             for step in window:
                 max_n = max(max_n, len(step["entities"]), len(step["next_entities"]))
+                has_teacher = has_teacher or ("teacher_action" in step and step["teacher_action"] is not None)
 
         ego = np.zeros((b, l, ego_dim), np.float32)
         next_ego = np.zeros_like(ego)
@@ -76,6 +82,8 @@ class SequenceReplay:
         entity_mask = np.zeros((b, l, max_n), np.bool_)
         next_entity_mask = np.zeros_like(entity_mask)
         action = np.zeros((b, l, 2), np.float32)
+        teacher_action = np.zeros((b, l, 2), np.float32) if has_teacher else None
+        teacher_mask = np.zeros((b, l), np.bool_) if has_teacher else None
         reward = np.zeros((b, l, 1), np.float32)
         done = np.zeros((b, l, 1), np.float32)
 
@@ -92,12 +100,15 @@ class SequenceReplay:
                     next_entities[bi, ti, :nn] = step["next_entities"]
                     next_entity_mask[bi, ti, :nn] = step["next_entity_mask"]
                 action[bi, ti] = step["action"]
+                if has_teacher and "teacher_action" in step and step["teacher_action"] is not None:
+                    teacher_action[bi, ti] = step["teacher_action"]
+                    teacher_mask[bi, ti] = True
                 reward[bi, ti, 0] = step["reward"]
                 done[bi, ti, 0] = float(step["done"])
 
         train_mask = np.zeros((b, l), np.bool_)
         train_mask[:, self.burn_in :] = True
-        return {
+        out = {
             "ego": torch.from_numpy(ego),
             "entities": torch.from_numpy(entities),
             "entity_mask": torch.from_numpy(entity_mask),
@@ -109,6 +120,10 @@ class SequenceReplay:
             "done": torch.from_numpy(done),
             "train_mask": torch.from_numpy(train_mask),
         }
+        if has_teacher:
+            out["teacher_action"] = torch.from_numpy(teacher_action)
+            out["teacher_mask"] = torch.from_numpy(teacher_mask)
+        return out
 
 
 def _sequence_scenes(actor, ego, entities, mask, done, *, grad: bool):
@@ -143,6 +158,7 @@ def recurrent_sac_update(
     gamma: float = 0.99,
     tau: float = 0.01,
     max_grad_norm: float = 5.0,
+    bc_coeff: float = 0.0,
 ):
     ego = batch["ego"].float()
     entities = batch["entities"].float()
@@ -154,10 +170,13 @@ def recurrent_sac_update(
     next_mask = batch["next_entity_mask"].bool()
     done = batch["done"].float()
     train_mask = batch["train_mask"].bool()
+    teacher_action = batch.get("teacher_action")
+    teacher_mask = batch.get("teacher_mask")
+    if teacher_action is not None:
+        teacher_action = teacher_action.float()
+        teacher_mask = teacher_mask.bool()
     b, l, _ = ego.shape
 
-    # Q update: recurrent scene state is treated as a representation target;
-    # actor parameters are updated only by the actor objective below.
     current_scene = _sequence_scenes(actor, ego, entities, mask, done, grad=False)
     next_scene = _sequence_scenes(actor, next_ego, next_entities, next_mask, done, grad=False)
 
@@ -195,12 +214,12 @@ def recurrent_sac_update(
     torch.nn.utils.clip_grad_norm_(q.parameters(), max_grad_norm)
     q_opt.step()
 
-    # Actor update with full sequence recurrence and terminal hidden resets.
     for p in q.parameters():
         p.requires_grad_(False)
     hidden = ego.new_zeros((b, actor.hidden_dim))
     actor_terms = []
     logp_values = []
+    bc_terms = []
     for t in range(l):
         pa, logp, hidden, _ = actor.sample(ego[:, t], entities[:, t], mask[:, t], hidden, deterministic=False)
         if train_mask[:, t].any():
@@ -208,9 +227,27 @@ def recurrent_sac_update(
             term = float(alpha) * logp - torch.minimum(tq1a, tq2a)
             actor_terms.append(term[train_mask[:, t]])
             logp_values.append(logp[train_mask[:, t]])
+            if teacher_action is not None and float(bc_coeff) > 0.0:
+                valid_teacher = train_mask[:, t] & teacher_mask[:, t]
+                if valid_teacher.any():
+                    # Deterministic actor action is the behavior target; ORCA is
+                    # strictly a temporary training teacher and never executed
+                    # by the deployed STASAC policy.
+                    deterministic_action, _, _, _ = actor.sample(
+                        ego[:, t], entities[:, t], mask[:, t], hidden.detach(), deterministic=True
+                    )
+                    bc_terms.append(
+                        behavior_cloning_loss(
+                            deterministic_action[valid_teacher],
+                            teacher_action[:, t][valid_teacher],
+                            coefficient=float(bc_coeff),
+                        )
+                    )
         if t < l - 1:
             hidden = reset_hidden(hidden, done[:, t, 0].bool())
-    actor_loss = torch.cat(actor_terms, dim=0).mean()
+    sac_actor_loss = torch.cat(actor_terms, dim=0).mean()
+    bc_loss = torch.stack(bc_terms).mean() if bc_terms else sac_actor_loss * 0.0
+    actor_loss = sac_actor_loss + bc_loss
     actor_opt.zero_grad(set_to_none=True)
     actor_loss.backward()
     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
@@ -223,6 +260,8 @@ def recurrent_sac_update(
     return {
         "q_loss": float(q_loss.detach().cpu()),
         "actor_loss": float(actor_loss.detach().cpu()),
+        "sac_actor_loss": float(sac_actor_loss.detach().cpu()),
+        "bc_loss": float(bc_loss.detach().cpu()),
         "mean_logp": float(mean_logp.detach().cpu()),
     }
 
@@ -252,8 +291,3 @@ def load_stasac_checkpoint(path, ego_dim: int | None = None):
     actor.load_state_dict(ck["actor"])
     q.load_state_dict(ck["q"])
     return actor, q, dict(ck.get("metadata", {}))
-
-
-# The full warehouse curriculum runner is intentionally built on top of these
-# tested primitives.  Unit tests exercise the recurrent learning mechanics;
-# experiment workflows exercise environment integration and long training.
