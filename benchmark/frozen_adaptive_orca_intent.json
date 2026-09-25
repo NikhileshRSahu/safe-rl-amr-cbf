@@ -1,20 +1,26 @@
 {
-  "status": "INVALIDATED_FOR_FINAL_COMPARISON",
-  "reason": "This development selection used environment-owned hidden human_uncertainty. Final adaptive ORCA must use only observable motion history and be re-selected on validation seeds.",
-  "do_not_use_for_final_holdout": true,
-  "historical_development_config": {
-    "base_config": "benchmark/frozen_peak_orca_config.json",
-    "horizon_gain": 0.45,
-    "margin_gain": 0.06,
-    "neighbor_gain": 0.5,
-    "max_human_time_horizon": 4.0,
-    "max_human_margin_add": 0.08
-  },
-  "historical_validation_result": {
+  "status": "FROZEN_OBSERVABLE_ONLY",
+  "selection_protocol": "candidates 0-5 on validation seeds 13000-13004; lexicographic collision, timeout, fleet success, success, throughput",
+  "perception_rule": "uses only consecutive observed human velocity vectors; no intent_mode or human_uncertainty",
+  "base_config": "benchmark/frozen_peak_orca_config.json",
+  "candidate": 2,
+  "horizon_gain": 1.0,
+  "margin_gain": 0.10,
+  "neighbor_gain": 1.5,
+  "max_human_time_horizon": 5.5,
+  "max_human_margin_add": 0.12,
+  "validation_result": {
     "episodes": 5,
-    "success_rate": 1.0,
+    "success_rate": 0.85,
     "collision_rate": 0.0,
-    "timeout_rate": 0.0,
-    "fleet_success_rate": 1.0
-  }
+    "timeout_rate": 0.15,
+    "fleet_success_rate": 0.60,
+    "mean_path_length_success": 28.406784439086913,
+    "mean_traversal_time_success": 35.498333333333335,
+    "mean_throughput_per_min": 4.672477914959551,
+    "mean_stop_yield_ticks": 311.4,
+    "mean_recovery_count": 12.0
+  },
+  "final_holdout_allowed": false,
+  "next_gate": "confirm on untouched validation seeds 13010-13019 before final holdout"
 }
