@@ -1,0 +1,72 @@
+name: STASAC Full-Horizon Candidates
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - ".github/workflows/stasac-full-horizon-candidates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [71, 172, 273]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Train candidate
+        run: |
+          python -m benchmark.stasac_training_runner \
+            --agent-steps 20000 \
+            --seed ${{ matrix.seed }} \
+            --out results/stasac_candidate_${{ matrix.seed }} \
+            --max-episode-steps 600 \
+            --burn-in 4 \
+            --train-len 8 \
+            --batch-size 8
+      - name: Verify candidate contract
+        run: |
+          SEED=${{ matrix.seed }} python - <<'PY'
+          import json, os, torch
+          from pathlib import Path
+          seed=os.environ['SEED']
+          root=Path(f'results/stasac_candidate_{seed}')
+          summary=json.loads((root/'summary.json').read_text())
+          m=summary['metadata']
+          assert m['agent_steps'] >= 20000, m
+          assert m['updates'] > 0, m
+          assert m['final_bc_coefficient'] == 0.0, m
+          assert m['training_seed_split'] == 'development_only', m
+          assert m['max_episode_steps'] == 600, m
+          scenarios={row['scenario'] for row in summary['episodes']}
+          required={'cross_intersection','shelf_corner','hesitation','mixed_behavior','density_06','density_12','density_18','density_24'}
+          assert required <= scenarios, (required-scenarios, scenarios)
+          ck=torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
+          assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_v1'
+          for tensor in ck['actor'].values():
+              assert torch.isfinite(tensor).all()
+          print(json.dumps(m, indent=2))
+          print('training successes', sum(r['success'] for r in summary['episodes']))
+          print('training collisions', sum(r['collision'] for r in summary['episodes']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stasac-candidate-${{ matrix.seed }}
+          path: results/stasac_candidate_${{ matrix.seed }}/
+          if-no-files-found: error
