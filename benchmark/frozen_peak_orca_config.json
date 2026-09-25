@@ -1,0 +1,20 @@
+{
+  "arc_horizon": 1.0,
+  "command_omega_samples": 15,
+  "command_speed_samples": 7,
+  "human_margin": 0.12,
+  "lookahead_distance": 1.8,
+  "neighbor_distance": 4.0,
+  "peer_margin": 0.08,
+  "planning_margin": 0.1,
+  "preferred_speed": 1.0,
+  "progress_weight": 4.0,
+  "recovery_ticks": 20,
+  "replan_interval": 12,
+  "smoothness_weight": 0.12,
+  "static_margin": 0.08,
+  "stuck_progress_eps": 0.01,
+  "stuck_ticks": 22,
+  "time_horizon": 3.0,
+  "waypoint_tolerance": 0.45
+}
