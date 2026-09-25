@@ -9,6 +9,7 @@ from benchmark.adaptive_predictive_orca import (
 )
 from benchmark.best_vs_best_protocol import (
     ScenarioSpec,
+    development_evaluation_seeds,
     paired_world_fingerprint,
     scenario_catalog,
     split_seed_sets,
@@ -68,10 +69,14 @@ def test_paired_world_fingerprint_is_identical_for_same_seed_and_changes_for_oth
 
 def test_seed_splits_are_disjoint_and_holdout_is_not_returned_before_freeze():
     dev, validation, holdout = split_seed_sets(frozen=False)
-    assert set(dev).isdisjoint(validation)
+    dev_eval = development_evaluation_seeds()
+    assert set(dev).isdisjoint(dev_eval)
+    assert set(dev_eval).isdisjoint(validation)
     assert holdout == ()
     dev2, validation2, holdout2 = split_seed_sets(frozen=True)
     assert dev2 == dev and validation2 == validation
+    assert len(dev_eval) >= 20
     assert len(holdout2) >= 30
     assert set(holdout2).isdisjoint(dev2)
+    assert set(holdout2).isdisjoint(dev_eval)
     assert set(holdout2).isdisjoint(validation2)
