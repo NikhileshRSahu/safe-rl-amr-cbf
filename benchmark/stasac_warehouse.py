@@ -8,6 +8,7 @@ import torch
 from classical_baseline import AStarPlanner
 from benchmark.best_vs_best_protocol import ScenarioSpec
 from benchmark.human_sweep_experiment import SweepHumanWorld
+from benchmark.shared_warehouse_perception import visible_with_shelves
 from benchmark.spatiotemporal_policy import reset_hidden
 from benchmark.train_multi_agent_research import DT, ROBOT_R, SHELVES, VMAX, WMAX, WORLD, wrap
 from benchmark.warehouse_interaction_features import (
@@ -40,7 +41,7 @@ def _rotate_world_to_body(vector, heading: float):
 
 
 class WarehouseObservationBuilder:
-    """Causal policy observations with common A* route context and all entities."""
+    """Causal policy observations with common A* route context and visible entities."""
 
     def __init__(
         self,
@@ -88,6 +89,8 @@ class WarehouseObservationBuilder:
     def _entity_observations(self, world, i: int, now: float):
         p = np.asarray(world.p[i], dtype=float)
         items: list[EntityObservation] = []
+        # AMRs are assumed fleet-connected, so their states are available within
+        # the communication/perception range even if a shelf blocks line of sight.
         for j in range(world.n):
             if j == i or world.done[j]:
                 continue
@@ -102,9 +105,16 @@ class WarehouseObservationBuilder:
                 dtype=np.float32,
             )
             items.append(EntityObservation(f"amr-{j}", "amr", q, velocity, now, True))
+        # Humans are sensor-observed and therefore shelf-occluded.
         for j in range(world.nppl):
             q = np.asarray(world.hp[j], dtype=float)
-            if float(np.linalg.norm(q - p)) > self.perception_range:
+            if not visible_with_shelves(
+                p,
+                q,
+                SHELVES,
+                max_range=self.perception_range,
+                shelf_padding=0.02,
+            ):
                 continue
             items.append(
                 EntityObservation(
