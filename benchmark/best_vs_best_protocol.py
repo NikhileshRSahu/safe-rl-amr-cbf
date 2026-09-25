@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-from benchmark.human_sweep_experiment import SweepHumanWorld
+from benchmark.warehouse_scenario_world import make_scenario_world
 
 
 @dataclass(frozen=True)
@@ -20,12 +20,7 @@ class ScenarioSpec:
 
 
 def scenario_catalog() -> tuple[ScenarioSpec, ...]:
-    """Warehouse-relevant scenario families used before final holdout.
-
-    Names describe the interaction condition. The current base world is used
-    for deterministic pairing; scenario-specific motion generators can extend
-    these specs without changing the seed/fairness contract.
-    """
+    """Warehouse-relevant scenario families used before final holdout."""
     return (
         ScenarioSpec("cross_intersection", "intent", 12, 4, 1.0, "medium"),
         ScenarioSpec("shelf_corner", "occlusion", 12, 4, 1.0, "medium"),
@@ -39,12 +34,7 @@ def scenario_catalog() -> tuple[ScenarioSpec, ...]:
 
 
 def split_seed_sets(*, frozen: bool):
-    """Return disjoint development/validation seeds and gated final holdout.
-
-    Holdout numbers are deliberately inaccessible through this API until the
-    caller declares both controller configurations frozen. They must never be
-    used by training, architecture selection or AP-ORCA tuning.
-    """
+    """Return disjoint development/validation seeds and gated final holdout."""
     dev = tuple(range(10100, 10120))
     validation = tuple(range(11100, 11120))
     holdout = tuple(range(13100, 13130)) if frozen else tuple()
@@ -52,15 +42,7 @@ def split_seed_sets(*, frozen: bool):
 
 
 def _world_for_spec(spec: ScenarioSpec, seed: int):
-    # Same constructor is used for both controllers; this function has no
-    # controller argument by design, preventing controller-specific worlds.
-    world = SweepHumanWorld(
-        spec.n_amr,
-        spec.humans,
-        int(seed),
-        speed_scale=spec.speed_scale,
-        randomness_level=spec.randomness_level,
-    )
+    world = make_scenario_world(spec, int(seed))
     world.reset()
     return world
 
