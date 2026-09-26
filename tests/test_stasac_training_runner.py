@@ -5,6 +5,7 @@ from benchmark.best_vs_best_protocol import split_seed_sets
 from benchmark.spatiotemporal_policy import STASACActor
 from benchmark.stasac_training_runner import (
     collect_training_episode,
+    competence_gate_max_steps,
     training_curriculum,
     training_curriculum_stages,
     training_seed_for_episode,
@@ -38,6 +39,11 @@ def test_curriculum_stages_increase_interaction_difficulty_and_leave_two_amr_cas
     assert {s.name for s in stages[3]} == {"mixed_local_traffic"}
     assert all(s.n_amr == 1 for stage in stages[:3] for s in stage)
     assert stages[3][0].n_amr == 2
+
+
+def test_competence_gate_never_inherits_an_artificially_short_smoke_horizon():
+    assert competence_gate_max_steps(120) >= 300
+    assert competence_gate_max_steps(600) == 600
 
 
 def test_training_seed_schedule_never_leaks_validation_or_holdout():
