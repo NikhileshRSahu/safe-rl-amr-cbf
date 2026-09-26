@@ -1,4 +1,4 @@
-name: Human Forecaster Smoke
+name: Human Forecaster Qualification
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
       - "benchmark/human_forecaster.py"
       - "benchmark/train_human_forecaster.py"
       - "benchmark/evaluate_human_forecaster.py"
+      - "benchmark/forecast_training_protocol.py"
       - ".github/workflows/human-forecaster-smoke.yml"
   workflow_dispatch:
 
@@ -15,9 +16,9 @@ permissions:
   contents: read
 
 jobs:
-  smoke:
+  qualify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       PYTHONPATH: .
     steps:
@@ -30,34 +31,72 @@ jobs:
           python -m pip install --upgrade pip
           pip install "numpy<2.0" scipy cvxpy osqp
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Train and evaluate causal forecaster
+      - name: Train on full forecast-development split and evaluate held-out seeds
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          from benchmark.best_vs_best_protocol import local_human_navigation_catalog
-          from benchmark.human_forecast_dataset import collect_world_forecast_samples
-          from benchmark.train_human_forecaster import train_forecaster, save_forecaster_checkpoint
-          from benchmark.evaluate_human_forecaster import evaluate_forecaster, evaluate_constant_velocity
 
-          catalog={s.name:s for s in local_human_navigation_catalog()}
-          samples=[]
-          for name,seed in [('human_hesitation',10100),('human_reversal',10101),('dense_human_flow',10102)]:
-              samples += collect_world_forecast_samples(catalog[name], seed, world_steps=70, history_len=8, horizon_steps=6, stride=5, max_humans=4)
-          model,meta=train_forecaster(samples, seed=71, epochs=3, hidden_dim=32)
-          out=Path('results/human_forecaster_smoke'); out.mkdir(parents=True,exist_ok=True)
-          digest=save_forecaster_checkpoint(out/'human_forecaster.pt', model, meta)
-          learned=evaluate_forecaster(model,samples)
-          cv=evaluate_constant_velocity(samples,horizon_seconds=1.5)
-          report={'metadata':meta,'sha256':digest,'learned':learned,'constant_velocity':cv,'sample_count':len(samples)}
-          (out/'report.json').write_text(json.dumps(report,indent=2))
-          print(json.dumps(report,indent=2))
-          assert len(samples)>0
-          assert meta['training_seeds']==[10100,10101,10102]
-          assert learned['ade']>=0 and learned['fde']>=0
+          from benchmark.best_vs_best_protocol import local_human_navigation_catalog
+          from benchmark.evaluate_human_forecaster import evaluate_constant_velocity, evaluate_forecaster
+          from benchmark.forecast_training_protocol import (
+              FORECAST_GATE_SCENARIOS,
+              forecaster_eval_seeds,
+              forecaster_training_seeds,
+              learned_forecaster_beats_cv,
+          )
+          from benchmark.human_forecast_dataset import collect_world_forecast_samples
+          from benchmark.train_human_forecaster import save_forecaster_checkpoint, train_forecaster
+
+          catalog = {s.name: s for s in local_human_navigation_catalog()}
+          train_samples = []
+          eval_samples = []
+          for name in FORECAST_GATE_SCENARIOS:
+              spec = catalog[name]
+              for seed in forecaster_training_seeds():
+                  train_samples += collect_world_forecast_samples(
+                      spec, seed, split='train', world_steps=150, history_len=8,
+                      horizon_steps=6, stride=5, forecast_step_stride=3, max_humans=6,
+                  )
+              for seed in forecaster_eval_seeds():
+                  eval_samples += collect_world_forecast_samples(
+                      spec, seed, split='eval', world_steps=150, history_len=8,
+                      horizon_steps=6, stride=5, forecast_step_stride=3, max_humans=6,
+                  )
+
+          model, meta = train_forecaster(train_samples, seed=71, epochs=35, hidden_dim=96, lr=1e-3)
+          learned = evaluate_forecaster(model, eval_samples)
+          cv = evaluate_constant_velocity(eval_samples)
+          passed, gate = learned_forecaster_beats_cv(learned, cv)
+
+          out = Path('results/human_forecaster_qualification')
+          out.mkdir(parents=True, exist_ok=True)
+          digest = save_forecaster_checkpoint(out/'human_forecaster.pt', model, meta)
+          report = {
+              'metadata': meta,
+              'sha256': digest,
+              'train_sample_count': len(train_samples),
+              'eval_sample_count': len(eval_samples),
+              'train_seeds': list(forecaster_training_seeds()),
+              'eval_seeds': list(forecaster_eval_seeds()),
+              'learned': learned,
+              'constant_velocity': cv,
+              'gate': gate,
+          }
+          (out/'report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          (out/'PASSED').write_text('1' if passed else '0')
+          PY
+      - name: Enforce predictor qualification gate
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          flag = Path('results/human_forecaster_qualification/PASSED').read_text().strip()
+          assert flag == '1', 'learned forecaster did not beat the CV qualification gate; do not launch long RL training'
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: human-forecaster-smoke
-          path: results/human_forecaster_smoke/
+          name: human-forecaster-qualification
+          path: results/human_forecaster_qualification/
           if-no-files-found: error
