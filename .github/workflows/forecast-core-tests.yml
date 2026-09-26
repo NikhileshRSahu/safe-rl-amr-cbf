@@ -1,0 +1,44 @@
+name: Forecast Core Tests
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/human_history.py"
+      - "benchmark/human_forecast_dataset.py"
+      - "benchmark/constant_velocity_forecaster.py"
+      - "benchmark/human_forecaster.py"
+      - "benchmark/forecast_risk_features.py"
+      - "tests/test_human_history.py"
+      - "tests/test_human_forecast_dataset.py"
+      - "tests/test_constant_velocity_forecaster.py"
+      - "tests/test_human_forecaster.py"
+      - "tests/test_forecast_risk_features.py"
+      - ".github/workflows/forecast-core-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run forecast core tests
+        run: |
+          pytest -q \
+            tests/test_human_history.py \
+            tests/test_human_forecast_dataset.py \
+            tests/test_constant_velocity_forecaster.py \
+            tests/test_human_forecaster.py \
+            tests/test_forecast_risk_features.py
