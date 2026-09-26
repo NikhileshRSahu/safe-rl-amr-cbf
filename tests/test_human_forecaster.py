@@ -33,10 +33,8 @@ def test_gru_forecaster_is_permutation_equivariant_and_handles_empty_tracks():
     assert empty.mean_xy.shape == (0, 4, 2)
 
 
-def test_zero_residual_head_reproduces_constant_velocity_baseline():
+def test_fresh_residual_forecaster_starts_at_constant_velocity_baseline():
     model = GRUHumanForecaster(hidden_dim=8, steps=3, horizon_seconds=0.9)
-    for p in model.head.parameters():
-        p.data.zero_()
     history = torch.zeros(1, 5, 5)
     mask = torch.tensor([[False, False, True, True, True]])
     history[0, 2, :4] = torch.tensor([1.0, 1.0, 0.5, -0.25])
