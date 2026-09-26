@@ -6,11 +6,14 @@ on:
     paths:
       - "benchmark/stasac_warehouse.py"
       - "benchmark/spatiotemporal_policy.py"
+      - "benchmark/train_stasac_cbf.py"
+      - "benchmark/stasac_training_runner.py"
       - "benchmark/human_*.py"
       - "benchmark/forecast_*.py"
       - "tests/test_forecast_warehouse_observation.py"
       - "tests/test_forecast_stasac_policy.py"
       - "tests/test_train_human_forecaster.py"
+      - "tests/test_forecast_stasac_training_runner.py"
       - ".github/workflows/forecast-integration-tests.yml"
   workflow_dispatch:
 
@@ -38,4 +41,6 @@ jobs:
             tests/test_train_human_forecaster.py \
             tests/test_forecast_warehouse_observation.py \
             tests/test_forecast_stasac_policy.py \
-            tests/test_spatiotemporal_policy.py
+            tests/test_forecast_stasac_training_runner.py \
+            tests/test_spatiotemporal_policy.py \
+            tests/test_stasac_training_runner.py
