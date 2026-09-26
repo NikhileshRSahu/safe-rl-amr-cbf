@@ -8,6 +8,8 @@ from benchmark.orca_teacher import (
     behavior_cloning_loss,
     bc_coefficient,
     normalize_teacher_action,
+    performance_gated_bc_coefficient,
+    should_promote_curriculum_stage,
 )
 from benchmark.spatiotemporal_policy import STASACActor, TwinRecurrentQ
 from benchmark.train_stasac_cbf import SequenceReplay, recurrent_sac_update
@@ -21,6 +23,50 @@ def test_bc_coefficient_decays_linearly_and_stays_zero_after_first_15_percent():
     assert bc_coefficient(150, total) == pytest.approx(0.0)
     assert bc_coefficient(151, total) == pytest.approx(0.0)
     assert bc_coefficient(1000, total) == pytest.approx(0.0)
+
+
+def test_performance_gated_teacher_stays_high_when_policy_is_far_below_teacher():
+    coeff = performance_gated_bc_coefficient(
+        policy_success_rate=0.25,
+        policy_collision_rate=0.00,
+        teacher_success_rate=0.90,
+        teacher_collision_rate=0.00,
+    )
+    assert coeff >= 0.65
+
+
+def test_performance_gated_teacher_decays_as_policy_approaches_safe_teacher_parity():
+    weak = performance_gated_bc_coefficient(0.35, 0.0, 0.90, 0.0)
+    close = performance_gated_bc_coefficient(0.82, 0.0, 0.90, 0.0)
+    parity = performance_gated_bc_coefficient(0.91, 0.0, 0.90, 0.0)
+    assert 0.0 <= parity < close < weak <= 1.0
+    assert parity == pytest.approx(0.0)
+
+
+def test_teacher_support_returns_if_policy_safety_is_worse_even_with_high_success():
+    coeff = performance_gated_bc_coefficient(
+        policy_success_rate=0.95,
+        policy_collision_rate=0.08,
+        teacher_success_rate=0.90,
+        teacher_collision_rate=0.01,
+        collision_tolerance=0.01,
+    )
+    assert coeff >= 0.5
+
+
+def test_curriculum_promotes_only_after_enough_safe_successful_policy_only_episodes():
+    assert not should_promote_curriculum_stage(
+        episodes=4, success_rate=1.0, collision_rate=0.0
+    )
+    assert not should_promote_curriculum_stage(
+        episodes=10, success_rate=0.84, collision_rate=0.0
+    )
+    assert not should_promote_curriculum_stage(
+        episodes=10, success_rate=0.90, collision_rate=0.03
+    )
+    assert should_promote_curriculum_stage(
+        episodes=10, success_rate=0.90, collision_rate=0.01
+    )
 
 
 def test_teacher_physical_commands_are_clipped_and_normalized_to_actor_bounds():
