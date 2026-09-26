@@ -4,6 +4,8 @@ on:
   push:
     branches: [research/beast-baselines-v1]
     paths:
+      - "benchmark/human_motion_profiles.py"
+      - "benchmark/warehouse_scenario_world.py"
       - "benchmark/human_forecast_dataset.py"
       - "benchmark/human_forecaster.py"
       - "benchmark/train_human_forecaster.py"
