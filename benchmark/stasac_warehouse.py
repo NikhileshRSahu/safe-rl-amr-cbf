@@ -12,7 +12,7 @@ from benchmark.human_forecast_dataset import ForecastOutput
 from benchmark.human_history import HumanTrackHistory
 from benchmark.shared_warehouse_perception import visible_with_shelves
 from benchmark.spatiotemporal_policy import reset_hidden
-from benchmark.train_multi_agent_research import DT, VMAX, WMAX, WORLD, wrap
+from benchmark.train_multi_agent_research import DT, ROBOT_R, SHELVES, VMAX, WMAX, WORLD, wrap
 from benchmark.warehouse_interaction_features import (
     EntityBatch,
     EntityObservation,
@@ -43,17 +43,7 @@ def _rotate_world_to_body(vector, heading: float):
 class WarehouseObservationBuilder:
     """Causal policy observations with optional learned human-motion forecasts."""
 
-    def __init__(
-        self,
-        world,
-        *,
-        perception_range: float = 6.0,
-        history_len: int = 8,
-        lookahead_distance: float = 1.8,
-        use_forecast: bool = False,
-        forecaster=None,
-        forecast_dt: float = 0.25,
-    ):
+    def __init__(self, world, *, perception_range: float = 6.0, history_len: int = 8, lookahead_distance: float = 1.8, use_forecast: bool = False, forecaster=None, forecast_dt: float = 0.25):
         self.perception_range = float(perception_range)
         self.lookahead_distance = float(lookahead_distance)
         self.histories = [ObservationHistory(maxlen=history_len) for _ in range(world.n)]
@@ -67,13 +57,7 @@ class WarehouseObservationBuilder:
             raise ValueError("forecast-enabled observations require a forecaster")
         self.paths = []
         for i in range(world.n):
-            planner = AStarPlanner(
-                map_bounds=(-WORLD, WORLD, -WORLD, WORLD),
-                shelves=SHELVES,
-                robot_radius=ROBOT_R,
-                margin=0.10,
-                resolution=0.25,
-            )
+            planner = AStarPlanner(map_bounds=(-WORLD, WORLD, -WORLD, WORLD), shelves=SHELVES, robot_radius=ROBOT_R, margin=0.10, resolution=0.25)
             path = planner.plan(tuple(world.p[i]), tuple(world.g[i])) or [tuple(world.p[i]), tuple(world.g[i])]
             self.paths.append(path)
 
@@ -110,10 +94,7 @@ class WarehouseObservationBuilder:
             q = np.asarray(world.p[j], dtype=float)
             if float(np.linalg.norm(q - p)) > self.perception_range:
                 continue
-            velocity = np.array([
-                math.cos(float(world.th[j])) * float(world.v[j]),
-                math.sin(float(world.th[j])) * float(world.v[j]),
-            ], dtype=np.float32)
+            velocity = np.array([math.cos(float(world.th[j])) * float(world.v[j]), math.sin(float(world.th[j])) * float(world.v[j])], dtype=np.float32)
             items.append(EntityObservation(f"amr-{j}", "amr", q, velocity, now, True))
         for j in range(world.nppl):
             q = np.asarray(world.hp[j], dtype=float)
@@ -133,19 +114,11 @@ class WarehouseObservationBuilder:
             hist_mask = torch.as_tensor(np.stack([s.mask for s in sequences]), dtype=torch.bool)
             with torch.no_grad():
                 pred = self.forecaster(hist, hist_mask)
-            forecast = ForecastOutput(
-                pred.mean_xy.detach().cpu().numpy().astype(np.float32),
-                pred.sigma_xy.detach().cpu().numpy().astype(np.float32),
-                pred.mask.detach().cpu().numpy().astype(np.bool_),
-            )
+            forecast = ForecastOutput(pred.mean_xy.detach().cpu().numpy().astype(np.float32), pred.sigma_xy.detach().cpu().numpy().astype(np.float32), pred.mask.detach().cpu().numpy().astype(np.bool_))
             heading = float(world.th[i])
             ego_vel = np.array([math.cos(heading) * float(world.v[i]), math.sin(heading) * float(world.v[i])], dtype=np.float32)
             route = np.asarray(waypoint, dtype=np.float32) - np.asarray(world.p[i], dtype=np.float32)
-            risk = build_forecast_risk_batch(
-                world.p[i], ego_vel, route, forecast,
-                forecast_dt=self.forecast_dt,
-                observation_ages=[s.observation_age for s in sequences],
-            )
+            risk = build_forecast_risk_batch(world.p[i], ego_vel, route, forecast, forecast_dt=self.forecast_dt, observation_ages=[s.observation_age for s in sequences])
             for row_idx, risk_row in zip(human_indices, risk.features):
                 extra[row_idx] = risk_row
         features = np.concatenate([base.features, extra], axis=1).astype(np.float32, copy=False)
@@ -163,13 +136,7 @@ class WarehouseObservationBuilder:
         goal_heading = math.atan2(float(goal[1] - p[1]), float(goal[0] - p[0]))
         heading_error = wrap(goal_heading - heading)
         rays = [world.ray(i, heading + k * math.pi / 4.0) for k in range(8)]
-        ego = np.asarray([
-            np.clip(waypoint_body[0] / 6.0, -1.0, 1.0), np.clip(waypoint_body[1] / 6.0, -1.0, 1.0),
-            np.clip(goal_body[0] / 20.0, -1.0, 1.0), np.clip(goal_body[1] / 20.0, -1.0, 1.0),
-            np.clip(goal_distance / 20.0, 0.0, 1.0), heading_error / math.pi,
-            np.clip(float(world.v[i]) / VMAX, 0.0, 1.0), np.clip(float(world.w[i]) / WMAX, -1.0, 1.0),
-            float(world.priority[i]), *rays,
-        ], dtype=np.float32)
+        ego = np.asarray([np.clip(waypoint_body[0] / 6.0, -1.0, 1.0), np.clip(waypoint_body[1] / 6.0, -1.0, 1.0), np.clip(goal_body[0] / 20.0, -1.0, 1.0), np.clip(goal_body[1] / 20.0, -1.0, 1.0), np.clip(goal_distance / 20.0, 0.0, 1.0), heading_error / math.pi, np.clip(float(world.v[i]) / VMAX, 0.0, 1.0), np.clip(float(world.w[i]) / WMAX, -1.0, 1.0), float(world.priority[i]), *rays], dtype=np.float32)
         if ego.shape != (EGO_DIM,):
             raise RuntimeError(f"ego feature contract broken: {ego.shape}")
         ego_velocity = np.array([math.cos(heading) * float(world.v[i]), math.sin(heading) * float(world.v[i])], dtype=np.float32)
