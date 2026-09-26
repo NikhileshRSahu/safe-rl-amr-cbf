@@ -22,41 +22,15 @@ def reset_hidden(hidden: torch.Tensor, done: torch.Tensor) -> torch.Tensor:
 class RiskAttentionSceneEncoder(nn.Module):
     """Permutation-invariant entity attention followed by temporal memory."""
 
-    def __init__(
-        self,
-        ego_dim: int,
-        entity_dim: int = FEATURE_DIM,
-        entity_embed_dim: int = 64,
-        ego_embed_dim: int = 96,
-        hidden_dim: int = 128,
-    ):
+    def __init__(self, ego_dim: int, entity_dim: int = FEATURE_DIM, entity_embed_dim: int = 64, ego_embed_dim: int = 96, hidden_dim: int = 128):
         super().__init__()
         self.ego_dim = int(ego_dim)
         self.entity_dim = int(entity_dim)
         self.hidden_dim = int(hidden_dim)
-        self.entity_encoder = nn.Sequential(
-            nn.Linear(self.entity_dim, entity_embed_dim),
-            nn.ReLU(),
-            nn.Linear(entity_embed_dim, entity_embed_dim),
-            nn.ReLU(),
-        )
-        # Risk-aware score consumes the learned embedding plus explicit
-        # finite-horizon t_CPA, d_CPA and bounded risk channels.
-        self.attention = nn.Sequential(
-            nn.Linear(entity_embed_dim + 3, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1),
-        )
-        self.ego_encoder = nn.Sequential(
-            nn.Linear(self.ego_dim, ego_embed_dim),
-            nn.ReLU(),
-            nn.Linear(ego_embed_dim, ego_embed_dim),
-            nn.ReLU(),
-        )
-        self.fuse = nn.Sequential(
-            nn.Linear(ego_embed_dim + entity_embed_dim, self.hidden_dim),
-            nn.ReLU(),
-        )
+        self.entity_encoder = nn.Sequential(nn.Linear(self.entity_dim, entity_embed_dim), nn.ReLU(), nn.Linear(entity_embed_dim, entity_embed_dim), nn.ReLU())
+        self.attention = nn.Sequential(nn.Linear(entity_embed_dim + 3, 64), nn.Tanh(), nn.Linear(64, 1))
+        self.ego_encoder = nn.Sequential(nn.Linear(self.ego_dim, ego_embed_dim), nn.ReLU(), nn.Linear(ego_embed_dim, ego_embed_dim), nn.ReLU())
+        self.fuse = nn.Sequential(nn.Linear(ego_embed_dim + entity_embed_dim, self.hidden_dim), nn.ReLU())
         self.gru = nn.GRUCell(self.hidden_dim, self.hidden_dim)
 
     def _pool_entities(self, entities: torch.Tensor, mask: torch.Tensor):
@@ -71,14 +45,12 @@ class RiskAttentionSceneEncoder(nn.Module):
             pooled = entities.new_zeros((b, self.entity_encoder[-2].out_features))
             weights = entities.new_zeros((b, 0))
             return pooled, weights
-
         embedded = self.entity_encoder(entities)
         risk_channels = entities[..., 6:9]
         logits = self.attention(torch.cat([embedded, risk_channels], dim=-1)).squeeze(-1)
         valid = mask.to(dtype=torch.bool)
         very_negative = torch.finfo(logits.dtype).min
         masked_logits = logits.masked_fill(~valid, very_negative)
-
         any_valid = valid.any(dim=1, keepdim=True)
         safe_logits = torch.where(any_valid, masked_logits, torch.zeros_like(masked_logits))
         weights = torch.softmax(safe_logits, dim=1)
@@ -88,13 +60,7 @@ class RiskAttentionSceneEncoder(nn.Module):
         pooled = torch.sum(weights.unsqueeze(-1) * embedded, dim=1)
         return pooled, weights
 
-    def forward(
-        self,
-        ego_static: torch.Tensor,
-        entities: torch.Tensor,
-        mask: torch.Tensor,
-        hidden: torch.Tensor | None = None,
-    ):
+    def forward(self, ego_static: torch.Tensor, entities: torch.Tensor, mask: torch.Tensor, hidden: torch.Tensor | None = None):
         if ego_static.ndim != 2 or ego_static.shape[-1] != self.ego_dim:
             raise ValueError(f"ego_static must be [B,{self.ego_dim}]")
         b = ego_static.shape[0]
@@ -112,21 +78,15 @@ class RiskAttentionSceneEncoder(nn.Module):
 class STASACActor(nn.Module):
     """SAC actor whose recurrent scene state directly controls (v, omega)."""
 
-    def __init__(self, ego_dim: int, hidden_dim: int = 128):
+    def __init__(self, ego_dim: int, hidden_dim: int = 128, entity_dim: int = FEATURE_DIM):
         super().__init__()
-        self.encoder = RiskAttentionSceneEncoder(ego_dim=ego_dim, hidden_dim=hidden_dim)
+        self.encoder = RiskAttentionSceneEncoder(ego_dim=ego_dim, entity_dim=entity_dim, hidden_dim=hidden_dim)
         self.hidden_dim = self.encoder.hidden_dim
+        self.entity_dim = self.encoder.entity_dim
         self.mu = nn.Linear(self.hidden_dim, 2)
         self.log_std = nn.Linear(self.hidden_dim, 2)
 
-    def sample(
-        self,
-        ego_static: torch.Tensor,
-        entities: torch.Tensor,
-        mask: torch.Tensor,
-        hidden: torch.Tensor | None = None,
-        deterministic: bool = False,
-    ):
+    def sample(self, ego_static: torch.Tensor, entities: torch.Tensor, mask: torch.Tensor, hidden: torch.Tensor | None = None, deterministic: bool = False):
         scene, next_hidden, weights = self.encoder(ego_static, entities, mask, hidden)
         mu = self.mu(scene)
         log_std = torch.clamp(self.log_std(scene), -5.0, 1.0)
@@ -136,11 +96,7 @@ class STASACActor(nn.Module):
         noise = torch.randn_like(mu)
         pre_tanh = mu + std * noise
         action = torch.tanh(pre_tanh)
-        gaussian_logp = (
-            -0.5 * ((pre_tanh - mu) / std).pow(2)
-            - log_std
-            - 0.5 * math.log(2.0 * math.pi)
-        ).sum(dim=-1, keepdim=True)
+        gaussian_logp = (-0.5 * ((pre_tanh - mu) / std).pow(2) - log_std - 0.5 * math.log(2.0 * math.pi)).sum(dim=-1, keepdim=True)
         squash = torch.log(1.0 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         logp = gaussian_logp - squash
         return action, logp, next_hidden, weights
@@ -149,13 +105,7 @@ class STASACActor(nn.Module):
 class _QNetwork(nn.Module):
     def __init__(self, hidden_dim: int):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim + 2, 160),
-            nn.ReLU(),
-            nn.Linear(160, 160),
-            nn.ReLU(),
-            nn.Linear(160, 1),
-        )
+        self.net = nn.Sequential(nn.Linear(hidden_dim + 2, 160), nn.ReLU(), nn.Linear(160, 160), nn.ReLU(), nn.Linear(160, 1))
 
     def forward(self, scene: torch.Tensor, action: torch.Tensor):
         if scene.ndim != 2 or action.ndim != 2 or action.shape[-1] != 2:
