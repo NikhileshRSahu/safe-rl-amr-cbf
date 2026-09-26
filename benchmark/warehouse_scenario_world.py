@@ -77,8 +77,6 @@ class WarehouseScenarioWorld(SweepHumanWorld):
         self._human_preferred_speed[idx] = max(self.human_min_speed, min(self.human_max_speed, speed))
 
     def _configure_cross_intersection(self):
-        # Real intersection in the vertical aisle between x=-6 and x=-3 and
-        # the warehouse-wide horizontal corridor y in [-2,2].
         staged = (
             ((-5.75, -0.45), (0.48, 0.00)),
             ((-3.25, 0.45), (-0.46, 0.00)),
@@ -93,8 +91,6 @@ class WarehouseScenarioWorld(SweepHumanWorld):
         self._repair_remaining_humans(count)
 
     def _configure_shelf_corner(self):
-        # Human 0 begins behind the lower-right corner of shelf [-8,2]-[-6,8]
-        # from AMR 1's left-corridor view and walks down into y~0 traffic.
         staged = (
             ((-5.55, 2.65), (0.00, -0.46)),
             ((-4.55, 1.65), (0.00, -0.38)),
@@ -115,27 +111,46 @@ class WarehouseScenarioWorld(SweepHumanWorld):
             self._set_human(i, *staged[i])
         self._repair_remaining_humans(count)
 
+    def _configure_reversal(self):
+        self._configure_cross_intersection()
+
+    def _configure_forklift_like_crossing(self):
+        # A faster, non-reciprocal cross-aisle mover. It deliberately reuses the
+        # current circular dynamic-obstacle geometry; it is 'forklift-like' in
+        # kinematics/priority only, not yet a rectangular forklift footprint.
+        staged = (
+            ((-5.90, -0.25), (0.58, 0.00)),
+            ((-3.10, 0.85), (-0.52, 0.00)),
+        )
+        count = min(len(staged), self.nppl)
+        for i in range(count):
+            self._set_human(i, *staged[i])
+        self._repair_remaining_humans(count)
+
     def _configure_mixed(self):
         self._configure_cross_intersection()
 
     def _configure_scenario(self):
-        if self.scenario_name == "cross_intersection":
+        name = self.scenario_name
+        if name in {"cross_intersection", "human_crossing", "dense_human_flow", "mixed_local_traffic"}:
             self._configure_cross_intersection()
-        elif self.scenario_name == "shelf_corner":
+        elif name in {"shelf_corner", "blind_shelf_corner"}:
             self._configure_shelf_corner()
-        elif self.scenario_name == "hesitation":
+        elif name in {"hesitation", "human_hesitation"}:
             self._configure_hesitation()
-        elif self.scenario_name == "mixed_behavior":
+        elif name == "human_reversal":
+            self._configure_reversal()
+        elif name == "forklift_crossing":
+            self._configure_forklift_like_crossing()
+        elif name == "mixed_behavior":
             self._configure_mixed()
 
     def _choose_human_velocities(self):
         super()._choose_human_velocities()
-        # Deterministic, physically bounded intent changes supplement the normal
-        # stochastic pedestrian model. They depend only on current episode time.
         if self.nppl == 0:
             return
         tick = int(self.steps)
-        if self.scenario_name == "hesitation":
+        if self.scenario_name in {"hesitation", "human_hesitation"}:
             if 28 <= tick < 42:
                 self.hv[0] = 0.0
             elif 42 <= tick < 58:
@@ -143,13 +158,14 @@ class WarehouseScenarioWorld(SweepHumanWorld):
                 self.hv[0] = direction * min(0.42 * self.speed_scale, self.human_max_speed)
             elif 58 <= tick < 68:
                 self.hv[0] = 0.0
-        elif self.scenario_name == "mixed_behavior":
-            if 24 <= tick < 35:
+        elif self.scenario_name in {"mixed_behavior", "human_reversal", "mixed_local_traffic"}:
+            if self.scenario_name != "human_reversal" and 24 <= tick < 35:
                 self.hv[0] = 0.0
-            if self.nppl > 1 and 45 <= tick < 62:
-                speed = float(np.linalg.norm(self.hv[1]))
+            target_idx = 0 if self.scenario_name == "human_reversal" else 1
+            if self.nppl > target_idx and 45 <= tick < 62:
+                speed = float(np.linalg.norm(self.hv[target_idx]))
                 if speed > 1e-6:
-                    self.hv[1] = -self.hv[1] / speed * min(speed, self.human_max_speed)
+                    self.hv[target_idx] = -self.hv[target_idx] / speed * min(speed, self.human_max_speed)
 
 
 def make_scenario_world(spec, seed: int):
