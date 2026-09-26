@@ -5,6 +5,7 @@ on:
     branches: [research/beast-baselines-v1]
     paths:
       - "benchmark/human_history.py"
+      - "benchmark/human_motion_profiles.py"
       - "benchmark/human_forecast_dataset.py"
       - "benchmark/constant_velocity_forecaster.py"
       - "benchmark/human_forecaster.py"
