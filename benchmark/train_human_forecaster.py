@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +40,15 @@ def train_forecaster(
     seeds = sorted({int(s.seed) for s in samples})
     if any(seed_value < 10100 or seed_value > 10115 for seed_value in seeds):
         raise ValueError("forecaster training samples must use only seeds 10100-10115")
+    forecast_dts = {round(float(s.forecast_dt), 6) for s in samples}
+    if len(forecast_dts) != 1:
+        raise ValueError("all forecaster samples must share one forecast_dt")
+    forecast_dt = float(next(iter(forecast_dts)))
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     steps = int(samples[0].future_xy.shape[0])
-    model = GRUHumanForecaster(history_dim=5, hidden_dim=hidden_dim, steps=steps)
+    horizon_seconds = float(steps * forecast_dt)
+    model = GRUHumanForecaster(history_dim=5, hidden_dim=hidden_dim, steps=steps, horizon_seconds=horizon_seconds)
     opt = torch.optim.Adam(model.parameters(), lr=float(lr))
     history, history_mask, future, future_mask = _stack(samples)
     losses = []
@@ -61,6 +65,8 @@ def train_forecaster(
         "training_seeds": seeds,
         "history_len": int(history.shape[1]),
         "forecast_steps": steps,
+        "forecast_dt": forecast_dt,
+        "horizon_seconds": horizon_seconds,
         "hidden_dim": int(hidden_dim),
         "final_loss": losses[-1],
     }
@@ -72,14 +78,18 @@ def save_forecaster_checkpoint(path, model: GRUHumanForecaster, metadata: dict) 
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"state_dict": model.state_dict(), "metadata": dict(metadata)}
     torch.save(payload, path)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    return digest
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def load_forecaster_checkpoint(path):
     payload = torch.load(path, map_location="cpu", weights_only=False)
     meta = dict(payload["metadata"])
-    model = GRUHumanForecaster(hidden_dim=int(meta["hidden_dim"]), steps=int(meta["forecast_steps"]))
+    horizon_seconds = float(meta.get("horizon_seconds", float(meta.get("forecast_steps", 8)) * float(meta.get("forecast_dt", 0.25))))
+    model = GRUHumanForecaster(
+        hidden_dim=int(meta["hidden_dim"]),
+        steps=int(meta["forecast_steps"]),
+        horizon_seconds=horizon_seconds,
+    )
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return model, meta
