@@ -1,0 +1,85 @@
+name: Forecast STASAC Smoke
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/stasac_training_runner.py"
+      - "benchmark/stasac_warehouse.py"
+      - "benchmark/train_stasac_cbf.py"
+      - "benchmark/human_forecast_dataset.py"
+      - "benchmark/human_forecaster.py"
+      - "benchmark/train_human_forecaster.py"
+      - ".github/workflows/forecast-stasac-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build frozen forecaster smoke checkpoint
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from benchmark.best_vs_best_protocol import local_human_navigation_catalog
+          from benchmark.human_forecast_dataset import collect_world_forecast_samples
+          from benchmark.train_human_forecaster import train_forecaster, save_forecaster_checkpoint
+          catalog={s.name:s for s in local_human_navigation_catalog()}
+          samples=[]
+          for name,seed in [('human_hesitation',10100),('human_reversal',10101)]:
+              samples += collect_world_forecast_samples(catalog[name],seed,world_steps=55,history_len=8,horizon_steps=4,stride=7,max_humans=2)
+          model,meta=train_forecaster(samples,seed=71,epochs=2,hidden_dim=16)
+          out=Path('results/forecast_stasac_smoke'); out.mkdir(parents=True,exist_ok=True)
+          save_forecaster_checkpoint(out/'forecaster.pt',model,meta)
+          PY
+      - name: Train forecast STASAC smoke policy
+        run: |
+          python -m benchmark.stasac_training_runner \
+            --agent-steps 400 \
+            --seed 71 \
+            --out results/forecast_stasac_smoke/policy \
+            --max-episode-steps 80 \
+            --burn-in 2 \
+            --train-len 4 \
+            --batch-size 4 \
+            --gate-interval-episodes 999 \
+            --forecaster-checkpoint results/forecast_stasac_smoke/forecaster.pt
+      - name: Verify forecast training contract
+        run: |
+          python - <<'PY'
+          import json, torch
+          from pathlib import Path
+          root=Path('results/forecast_stasac_smoke/policy')
+          summary=json.loads((root/'summary.json').read_text())
+          m=summary['metadata']
+          assert m['forecast_enabled'] is True, m
+          assert m['entity_dim'] > 14, m
+          assert m['training_seed_split']=='development_gradient_only', m
+          assert m['competence_gate_max_steps'] >= 300, m
+          assert len(m['forecaster_sha256']) == 64, m
+          ck=torch.load(root/'stasac_cbf.pt',map_location='cpu',weights_only=False)
+          assert ck['observation_version']=='warehouse_variable_entities_risk_history_forecast_v1'
+          assert ck['entity_dim']==m['entity_dim']
+          for tensor in ck['actor'].values(): assert torch.isfinite(tensor).all()
+          print(json.dumps(m,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forecast-stasac-smoke
+          path: results/forecast_stasac_smoke/
+          if-no-files-found: error
