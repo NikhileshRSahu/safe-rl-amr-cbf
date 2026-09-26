@@ -44,7 +44,9 @@ class GRUHumanForecaster(nn.Module):
         raw = self.head(h[-1]).reshape(n, self.steps, 4)
         delta = raw[..., :2]
         sigma = torch.clamp(F.softplus(raw[..., 2:]) + 1e-4, 1e-4, 3.0)
-        last_idx = history_mask.long().sum(dim=1).clamp(min=1) - 1
+        positions = torch.arange(history.shape[1], device=history.device).unsqueeze(0).expand_as(history_mask)
+        invalid = torch.full_like(positions, -1)
+        last_idx = torch.where(history_mask, positions, invalid).max(dim=1).values.clamp(min=0)
         last_xy = history[torch.arange(n, device=history.device), last_idx, :2]
         mean_xy = last_xy[:, None, :] + torch.cumsum(delta, dim=1)
         valid_track = history_mask.any(dim=1)
