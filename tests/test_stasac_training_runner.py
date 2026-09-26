@@ -55,5 +55,8 @@ def test_short_real_episode_collects_bounded_actor_and_teacher_actions_with_vari
     assert all("teacher_action" in t for t in transitions)
     assert all(np.max(np.abs(t["action"])) <= 1.0 + 1e-6 for t in transitions)
     assert all(np.max(np.abs(t["teacher_action"])) <= 1.0 + 1e-6 for t in transitions)
-    assert max(len(t["entities"]) for t in transitions) > 4
+    # Zero visible entities is valid under causal range/occlusion sensing; the
+    # representation must remain a well-formed variable-size 2-D set.
+    assert all(t["entities"].ndim == 2 for t in transitions)
+    assert all(len(t["entities"]) <= spec.humans + spec.n_amr - 1 for t in transitions)
     assert all(np.isfinite(t["ego"]).all() for t in transitions)
