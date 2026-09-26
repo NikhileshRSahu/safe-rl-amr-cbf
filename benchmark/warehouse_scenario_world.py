@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from benchmark.human_motion_profiles import hesitation_speed_factor
 from benchmark.human_sweep_experiment import SweepHumanWorld
 from benchmark.render_shared_success_case import HUMAN_MIN_SEPARATION
 
@@ -151,13 +152,12 @@ class WarehouseScenarioWorld(SweepHumanWorld):
             return
         tick = int(self.steps)
         if self.scenario_name in {"hesitation", "human_hesitation"}:
-            if 28 <= tick < 42:
-                self.hv[0] = 0.0
-            elif 42 <= tick < 58:
-                direction = np.array([1.0, 0.0], dtype=np.float32)
-                self.hv[0] = direction * min(0.42 * self.speed_scale, self.human_max_speed)
-            elif 58 <= tick < 68:
-                self.hv[0] = 0.0
+            # Smooth finite acceleration makes hesitation human-like and causal:
+            # every controller sees the same deceleration cue before the stop.
+            factor = hesitation_speed_factor(tick)
+            direction = np.array([1.0, 0.0], dtype=np.float32)
+            speed = min(0.46 * self.speed_scale * factor, self.human_max_speed)
+            self.hv[0] = direction * speed
         elif self.scenario_name in {"mixed_behavior", "human_reversal", "mixed_local_traffic"}:
             if self.scenario_name != "human_reversal" and 24 <= tick < 35:
                 self.hv[0] = 0.0
