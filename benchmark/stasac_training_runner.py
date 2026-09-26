@@ -18,7 +18,12 @@ from benchmark.best_vs_best_protocol import (
     local_human_navigation_catalog,
     split_seed_sets,
 )
-from benchmark.orca_teacher import bc_coefficient, normalize_teacher_action
+from benchmark.best_vs_best_runner import run_ap_orca_episode
+from benchmark.orca_teacher import (
+    normalize_teacher_action,
+    performance_gated_bc_coefficient,
+    should_promote_curriculum_stage,
+)
 from benchmark.spatiotemporal_policy import STASACActor, TwinRecurrentQ, reset_hidden
 from benchmark.stasac_warehouse import EGO_DIM, WarehouseObservationBuilder, make_training_world
 from benchmark.train_multi_agent_research import DT, VMAX, WMAX
@@ -34,12 +39,31 @@ def training_curriculum() -> tuple[ScenarioSpec, ...]:
     return local_human_navigation_catalog()
 
 
-def training_seed_for_episode(episode_index: int) -> int:
-    """Map every training episode strictly into the predeclared development set."""
+def training_curriculum_stages() -> tuple[tuple[ScenarioSpec, ...], ...]:
+    """Difficulty stages; promotion is performance gated, never time gated."""
+    catalog = {s.name: s for s in training_curriculum()}
+    return (
+        (catalog["human_crossing"], catalog["blind_shelf_corner"]),
+        (catalog["human_hesitation"], catalog["human_reversal"]),
+        (catalog["forklift_crossing"], catalog["dense_human_flow"]),
+        (catalog["mixed_local_traffic"],),
+    )
+
+
+def curriculum_gate_seeds() -> tuple[int, ...]:
+    """Development-only seeds withheld from gradient collection for competence gates."""
     dev_seeds, _, _ = split_seed_sets(frozen=False)
-    if not dev_seeds:
-        raise RuntimeError("development seed set is empty")
-    return int(dev_seeds[int(episode_index) % len(dev_seeds)])
+    return tuple(int(x) for x in dev_seeds[-4:])
+
+
+def training_seed_for_episode(episode_index: int) -> int:
+    """Map gradient episodes to development seeds excluding competence-gate seeds."""
+    dev_seeds, _, _ = split_seed_sets(frozen=False)
+    gate = set(curriculum_gate_seeds())
+    train_seeds = tuple(int(x) for x in dev_seeds if int(x) not in gate)
+    if not train_seeds:
+        raise RuntimeError("development training seed set is empty")
+    return int(train_seeds[int(episode_index) % len(train_seeds)])
 
 
 def _default_orca_config():
@@ -73,7 +97,7 @@ def collect_training_episode(
     """Collect one warehouse local-navigation rollout.
 
     STASAC supplies the policy action. AP-ORCA is queried only for the explicit
-    warm-start teacher target. Deployment never calls ORCA.
+    training teacher target. Deployment never calls ORCA.
     """
     teacher_mix = float(np.clip(teacher_mix, 0.0, 1.0))
     world = make_training_world(spec, int(seed))
@@ -113,8 +137,9 @@ def collect_training_episode(
                 v_max=VMAX,
                 omega_max=WMAX,
             )
-            teacher_action = np.asarray(physical_teacher, dtype=np.float32)
-            teacher_action = np.clip(teacher_action, -1.0, 1.0)
+            teacher_action = np.clip(
+                np.asarray(physical_teacher, dtype=np.float32), -1.0, 1.0
+            )
 
             executed = (1.0 - teacher_mix) * policy_action + teacher_mix * teacher_action
             executed = np.clip(executed, -1.0, 1.0).astype(np.float32)
@@ -165,6 +190,56 @@ def collect_training_episode(
     }
 
 
+def _rate_summary(rows: list[dict]) -> dict[str, float]:
+    agents = max(1, sum(int(r["agents"]) for r in rows))
+    return {
+        "episodes": float(len(rows)),
+        "success_rate": float(sum(int(r["success"]) for r in rows) / agents),
+        "collision_rate": float(sum(int(r["collision"]) for r in rows) / agents),
+    }
+
+
+def _policy_only_gate_rows(
+    actor: STASACActor,
+    stage: tuple[ScenarioSpec, ...],
+    *,
+    max_steps: int,
+) -> list[dict]:
+    rows: list[dict] = []
+    for spec in stage:
+        for seed in curriculum_gate_seeds()[:2]:
+            result = collect_training_episode(
+                actor,
+                spec,
+                seed=seed,
+                max_steps=max_steps,
+                teacher_mix=0.0,
+                use_cbf=True,
+                deterministic_actor=True,
+            )
+            rows.append(
+                {
+                    "scenario": spec.name,
+                    "seed": int(seed),
+                    "agents": int(spec.n_amr),
+                    "success": int(result["summary"]["success"]),
+                    "collision": int(result["summary"]["collision"]),
+                }
+            )
+    return rows
+
+
+def _teacher_gate_rows(
+    stage: tuple[ScenarioSpec, ...], *, max_steps: int
+) -> list[dict]:
+    rows: list[dict] = []
+    for spec in stage:
+        for seed in curriculum_gate_seeds()[:2]:
+            row = run_ap_orca_episode(spec, seed=seed, max_steps=max_steps)
+            rows.append(row)
+    return rows
+
+
 def train_stasac(
     *,
     agent_steps: int,
@@ -174,6 +249,7 @@ def train_stasac(
     burn_in: int = 4,
     train_len: int = 8,
     batch_size: int = 8,
+    gate_interval_episodes: int = 5,
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -190,29 +266,36 @@ def train_stasac(
     q_opt = torch.optim.Adam(q.parameters(), lr=3e-4)
     replay = SequenceReplay(capacity_episodes=512, burn_in=burn_in, train_len=train_len)
 
-    curriculum = training_curriculum()
+    stages = training_curriculum_stages()
     total_target = max(1, int(agent_steps))
     global_agent_steps = 0
     episode_index = 0
     update_count = 0
+    current_stage = 0
+    stage_episode_index = 0
+    teacher_coeff = 1.0
+    policy_gate_history: list[dict] = []
+    teacher_gate_cache: dict[int, dict[str, float]] = {}
+    gate_logs: list[dict] = []
     logs = []
     rng = np.random.default_rng(seed + 9001)
 
     while global_agent_steps < total_target:
-        spec = curriculum[episode_index % len(curriculum)]
+        stage = stages[current_stage]
+        spec = stage[stage_episode_index % len(stage)]
         dev_seed = training_seed_for_episode(episode_index)
-        coeff = bc_coefficient(global_agent_steps, total_target)
         episode = collect_training_episode(
             actor,
             spec,
             seed=dev_seed,
             max_steps=max_episode_steps,
-            teacher_mix=coeff,
+            teacher_mix=teacher_coeff,
             use_cbf=True,
             deterministic_actor=False,
         )
         global_agent_steps += episode["agent_steps"]
         episode_index += 1
+        stage_episode_index += 1
 
         for trajectory in episode["trajectories"]:
             if len(trajectory) >= replay.window_len:
@@ -233,16 +316,17 @@ def train_stasac(
                     alpha=0.08,
                     gamma=0.99,
                     tau=0.01,
-                    bc_coeff=bc_coefficient(global_agent_steps, total_target),
+                    bc_coeff=teacher_coeff,
                 )
                 update_count += 1
 
         row = {
             "episode": episode_index,
+            "stage": int(current_stage),
             "scenario": spec.name,
             "seed": int(dev_seed),
             "agent_steps": int(global_agent_steps),
-            "bc_coefficient": bc_coefficient(global_agent_steps, total_target),
+            "bc_coefficient": float(teacher_coeff),
             **episode["summary"],
         }
         if latest_metrics:
@@ -250,20 +334,65 @@ def train_stasac(
         logs.append(row)
         print(json.dumps(row), flush=True)
 
+        if stage_episode_index % max(1, int(gate_interval_episodes)) == 0:
+            probe_rows = _policy_only_gate_rows(actor, stage, max_steps=max_episode_steps)
+            policy_gate_history.extend(probe_rows)
+            # Keep the competence decision local to the current stage.
+            policy_gate_history = policy_gate_history[-12:]
+            policy_rates = _rate_summary(policy_gate_history)
+
+            if current_stage not in teacher_gate_cache:
+                teacher_gate_cache[current_stage] = _rate_summary(
+                    _teacher_gate_rows(stage, max_steps=max_episode_steps)
+                )
+            teacher_rates = teacher_gate_cache[current_stage]
+            teacher_coeff = performance_gated_bc_coefficient(
+                policy_rates["success_rate"],
+                policy_rates["collision_rate"],
+                teacher_rates["success_rate"],
+                teacher_rates["collision_rate"],
+            )
+            promoted = should_promote_curriculum_stage(
+                episodes=int(policy_rates["episodes"]),
+                success_rate=policy_rates["success_rate"],
+                collision_rate=policy_rates["collision_rate"],
+            )
+            gate_row = {
+                "after_episode": int(episode_index),
+                "stage": int(current_stage),
+                "policy": policy_rates,
+                "teacher": teacher_rates,
+                "next_bc_coefficient": float(teacher_coeff),
+                "promoted": bool(promoted and current_stage < len(stages) - 1),
+            }
+            gate_logs.append(gate_row)
+            print(json.dumps({"competence_gate": gate_row}), flush=True)
+
+            if promoted and current_stage < len(stages) - 1:
+                current_stage += 1
+                stage_episode_index = 0
+                policy_gate_history = []
+                # New difficulty starts with full teacher support until the first
+                # policy-only competence probe measures otherwise.
+                teacher_coeff = 1.0
+
     metadata = {
         "agent_steps": int(global_agent_steps),
         "seed": int(seed),
         "updates": int(update_count),
         "architecture": "spatiotemporal_risk_attention_sac_cbf_v1",
         "benchmark_focus": "human_aware_local_navigation",
+        "teacher_schedule": "performance_gated",
+        "curriculum_schedule": "safety_success_gated_4_stage",
+        "final_stage": int(current_stage),
         "ego_dim": EGO_DIM,
-        "teacher_warm_fraction": 0.15,
-        "final_bc_coefficient": bc_coefficient(global_agent_steps, total_target),
-        "training_seed_split": "development_only",
+        "final_bc_coefficient": float(teacher_coeff),
+        "training_seed_split": "development_gradient_only",
+        "competence_gate_seeds": list(curriculum_gate_seeds()),
         "max_episode_steps": int(max_episode_steps),
     }
     save_stasac_checkpoint(out / "stasac_cbf.pt", actor, q, metadata=metadata)
-    payload = {"metadata": metadata, "episodes": logs}
+    payload = {"metadata": metadata, "episodes": logs, "competence_gates": gate_logs}
     (out / "summary.json").write_text(json.dumps(payload, indent=2))
     return payload
 
@@ -277,6 +406,7 @@ def main():
     ap.add_argument("--burn-in", type=int, default=4)
     ap.add_argument("--train-len", type=int, default=8)
     ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--gate-interval-episodes", type=int, default=5)
     args = ap.parse_args()
     result = train_stasac(
         agent_steps=args.agent_steps,
@@ -286,6 +416,7 @@ def main():
         burn_in=args.burn_in,
         train_len=args.train_len,
         batch_size=args.batch_size,
+        gate_interval_episodes=args.gate_interval_episodes,
     )
     print(json.dumps(result["metadata"], indent=2), flush=True)
 
