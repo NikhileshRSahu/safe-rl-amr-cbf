@@ -45,20 +45,28 @@ jobs:
       - name: Verify checkpoint and training contract
         run: |
           python - <<'PY'
-          import json, math, torch
+          import json, torch
           from pathlib import Path
           root=Path('results/stasac_smoke')
           summary=json.loads((root/'summary.json').read_text())
           m=summary['metadata']
           assert m['agent_steps'] >= 2000, m
           assert m['updates'] > 0, m
-          assert m['final_bc_coefficient'] == 0.0, m
-          assert m['training_seed_split'] == 'development_only', m
+          assert 0.0 <= m['final_bc_coefficient'] <= 1.0, m
+          assert m['training_seed_split'] == 'development_gradient_only', m
+          assert m['teacher_schedule'] == 'performance_gated', m
+          assert m['curriculum_schedule'] == 'safety_success_gated_4_stage', m
+          assert m['competence_gate_max_steps'] >= 300, m
+          gates=summary['competence_gates']
+          assert gates, 'missing competence gates'
+          assert all(g['gate_max_steps'] >= 300 for g in gates)
+          assert any(g['teacher']['success_rate'] > 0.0 for g in gates), gates
           ck=torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
           assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_v1'
           for tensor in ck['actor'].values():
               assert torch.isfinite(tensor).all()
           print(json.dumps(m, indent=2))
+          print(json.dumps(gates[-1], indent=2))
           PY
       - uses: actions/upload-artifact@v4
         with:
