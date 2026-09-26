@@ -17,6 +17,7 @@ class ForecastSample:
     future_mask: np.ndarray
     scenario: str
     seed: int
+    forecast_dt: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,17 @@ def assert_training_seed_allowed(seed: int) -> None:
         raise ValueError(f"seed {seed} is not in forecast gradient-training split 10100-10115")
 
 
-def make_forecast_sample(timestamps, positions, *, t0_index: int, history_len: int, horizon_steps: int, scenario: str, seed: int) -> ForecastSample:
+def make_forecast_sample(
+    timestamps,
+    positions,
+    *,
+    t0_index: int,
+    history_len: int,
+    horizon_steps: int,
+    scenario: str,
+    seed: int,
+    future_stride: int = 1,
+) -> ForecastSample:
     assert_training_seed_allowed(seed)
     ts = np.asarray(timestamps, dtype=np.float32)
     xy = np.asarray(positions, dtype=np.float32)
@@ -40,13 +51,15 @@ def make_forecast_sample(timestamps, positions, *, t0_index: int, history_len: i
         raise ValueError("timestamps/positions shape mismatch")
     if not np.all(np.diff(ts) > 0):
         raise ValueError("timestamps must be strictly increasing")
-    t0_index, history_len, horizon_steps = int(t0_index), int(history_len), int(horizon_steps)
-    if history_len < 2 or horizon_steps < 1:
-        raise ValueError("invalid history/horizon")
+    t0_index, history_len, horizon_steps, future_stride = int(t0_index), int(history_len), int(horizon_steps), int(future_stride)
+    if history_len < 2 or horizon_steps < 1 or future_stride < 1:
+        raise ValueError("invalid history/horizon/stride")
     if t0_index < 0 or t0_index >= len(ts):
         raise IndexError("t0_index out of range")
-    if t0_index + horizon_steps >= len(ts):
+    future_indices = t0_index + future_stride * np.arange(1, horizon_steps + 1)
+    if future_indices[-1] >= len(ts):
         raise ValueError("not enough future samples")
+
     hist = np.zeros((history_len, 5), dtype=np.float32)
     hist_mask = np.zeros((history_len,), dtype=np.bool_)
     start_src = max(0, t0_index - history_len + 1)
@@ -63,18 +76,32 @@ def make_forecast_sample(timestamps, positions, *, t0_index: int, history_len: i
         hist[dst, 2:4] = vel
         hist[dst, 4] = ts[src]
         hist_mask[dst] = True
-    future_xy = xy[t0_index + 1 : t0_index + 1 + horizon_steps].copy()
+
+    future_xy = xy[future_indices].copy()
     future_mask = np.ones((horizon_steps,), dtype=np.bool_)
+    forecast_dt = float(ts[future_indices[0]] - ts[t0_index])
     if np.any(hist[:, 4][hist_mask] > ts[t0_index] + 1e-7):
         raise RuntimeError("future leakage in forecast history")
-    return ForecastSample(hist, hist_mask, future_xy, future_mask, str(scenario), int(seed))
+    if forecast_dt <= 0.0:
+        raise RuntimeError("forecast_dt must be positive")
+    return ForecastSample(hist, hist_mask, future_xy, future_mask, str(scenario), int(seed), forecast_dt)
 
 
-def collect_world_forecast_samples(spec, seed: int, *, world_steps: int = 100, history_len: int = 8, horizon_steps: int = 8, stride: int = 2, max_humans: int | None = None) -> list[ForecastSample]:
-    """Collect supervised forecast samples from development-training warehouse trajectories.
+def collect_world_forecast_samples(
+    spec,
+    seed: int,
+    *,
+    world_steps: int = 120,
+    history_len: int = 8,
+    horizon_steps: int = 6,
+    stride: int = 2,
+    forecast_step_stride: int = 3,
+    max_humans: int | None = None,
+) -> list[ForecastSample]:
+    """Collect causal warehouse forecast samples; future truth is labels only.
 
-    Future simulator positions are used only as labels after each causal t0; no
-    future state is included in the input history.
+    With simulator DT=0.1, the default target spacing is 0.3 s and six
+    forecast points cover a 1.8 s prediction horizon.
     """
     assert_training_seed_allowed(seed)
     from benchmark.warehouse_scenario_world import make_scenario_world
@@ -94,9 +121,20 @@ def collect_world_forecast_samples(spec, seed: int, *, world_steps: int = 100, h
     samples: list[ForecastSample] = []
     n_people = world.nppl if max_humans is None else min(world.nppl, int(max_humans))
     first_t0 = max(1, history_len - 1)
-    last_t0 = len(ts) - horizon_steps - 1
+    last_t0 = len(ts) - horizon_steps * int(forecast_step_stride) - 1
     for j in range(n_people):
         xy = np.asarray(tracks[j], dtype=np.float32)
         for t0 in range(first_t0, last_t0 + 1, max(1, int(stride))):
-            samples.append(make_forecast_sample(ts, xy, t0_index=t0, history_len=history_len, horizon_steps=horizon_steps, scenario=spec.name, seed=int(seed)))
+            samples.append(
+                make_forecast_sample(
+                    ts,
+                    xy,
+                    t0_index=t0,
+                    history_len=history_len,
+                    horizon_steps=horizon_steps,
+                    scenario=spec.name,
+                    seed=int(seed),
+                    future_stride=int(forecast_step_stride),
+                )
+            )
     return samples
