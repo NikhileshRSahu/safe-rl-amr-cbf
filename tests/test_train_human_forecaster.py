@@ -3,7 +3,13 @@ import torch
 
 from benchmark.evaluate_human_forecaster import displacement_metrics, evaluate_forecaster
 from benchmark.human_forecast_dataset import make_forecast_sample
-from benchmark.train_human_forecaster import load_forecaster_checkpoint, save_forecaster_checkpoint, train_forecaster
+from benchmark.human_forecaster import TorchForecastOutput
+from benchmark.train_human_forecaster import (
+    forecast_training_loss,
+    load_forecaster_checkpoint,
+    save_forecaster_checkpoint,
+    train_forecaster,
+)
 
 
 def _samples():
@@ -19,6 +25,7 @@ def _samples():
 def test_train_forecaster_is_finite_and_roundtrips(tmp_path):
     model, meta = train_forecaster(_samples(), epochs=2, hidden_dim=16)
     assert np.isfinite(meta["final_loss"])
+    assert meta["mean_loss_weight"] > 0.0
     assert set(meta["training_seeds"]) == {10100, 10101}
     path = tmp_path / "forecast.pt"
     digest = save_forecaster_checkpoint(path, model, meta)
@@ -28,6 +35,21 @@ def test_train_forecaster_is_finite_and_roundtrips(tmp_path):
     report = evaluate_forecaster(loaded, _samples())
     assert np.isfinite(report["ade"])
     assert np.isfinite(report["fde"])
+
+
+def test_forecast_training_loss_adds_horizon_weighted_mean_accuracy_term():
+    target = torch.zeros(1, 3, 2)
+    mask = torch.ones(1, 3, dtype=torch.bool)
+    sigma = torch.ones(1, 3, 2)
+    early_error = torch.tensor([[[1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]])
+    late_error = torch.tensor([[[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]]])
+    early = TorchForecastOutput(early_error, sigma, mask)
+    late = TorchForecastOutput(late_error, sigma, mask)
+    early_total, early_parts = forecast_training_loss(early, target, mask, mean_loss_weight=2.0)
+    late_total, late_parts = forecast_training_loss(late, target, mask, mean_loss_weight=2.0)
+    assert early_parts["mean_loss"] > 0.0
+    assert late_parts["mean_loss"] > early_parts["mean_loss"]
+    assert late_total > early_total
 
 
 def test_displacement_metrics_exact_case():
