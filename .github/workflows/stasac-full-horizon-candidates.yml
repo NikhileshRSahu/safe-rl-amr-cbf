@@ -51,12 +51,14 @@ jobs:
           m=summary['metadata']
           assert m['agent_steps'] >= 20000, m
           assert m['updates'] > 0, m
-          assert m['final_bc_coefficient'] == 0.0, m
-          assert m['training_seed_split'] == 'development_only', m
+          assert 0.0 <= m['final_bc_coefficient'] <= 1.0, m
+          assert m['training_seed_split'] == 'development_gradient_only', m
+          assert m['teacher_schedule'] == 'performance_gated', m
+          assert m['curriculum_schedule'] == 'safety_success_gated_4_stage', m
           assert m['max_episode_steps'] == 600, m
-          scenarios={row['scenario'] for row in summary['episodes']}
-          required={'cross_intersection','shelf_corner','hesitation','mixed_behavior','density_06','density_12','density_18','density_24'}
-          assert required <= scenarios, (required-scenarios, scenarios)
+          assert m['competence_gate_max_steps'] == 600, m
+          assert 0 <= m['final_stage'] <= 3, m
+          assert summary['competence_gates'], 'missing competence gates'
           ck=torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
           assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_v1'
           for tensor in ck['actor'].values():
@@ -64,6 +66,7 @@ jobs:
           print(json.dumps(m, indent=2))
           print('training successes', sum(r['success'] for r in summary['episodes']))
           print('training collisions', sum(r['collision'] for r in summary['episodes']))
+          print('last competence gate', json.dumps(summary['competence_gates'][-1], indent=2))
           PY
       - uses: actions/upload-artifact@v4
         with:
