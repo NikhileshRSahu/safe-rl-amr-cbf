@@ -1,6 +1,6 @@
 import torch
 
-from benchmark.human_forecaster import GRUHumanForecaster
+from benchmark.human_forecaster import GRUHumanForecaster, motion_nonlinearity_gate
 
 
 def test_gru_forecaster_shapes_sigma_and_gradients():
@@ -47,3 +47,15 @@ def test_fresh_residual_forecaster_starts_at_constant_velocity_baseline():
         for k in range(3)
     ])
     assert torch.allclose(out.mean_xy[0], expected, atol=1e-6)
+
+
+def test_motion_nonlinearity_gate_suppresses_residuals_for_steady_motion_and_opens_after_stop():
+    history = torch.zeros(2, 6, 5)
+    mask = torch.ones(2, 6, dtype=torch.bool)
+    history[0, :, 2] = 0.5
+    history[1, :4, 2] = 0.5
+    history[1, 4:, 2] = 0.0
+    gate = motion_nonlinearity_gate(history, mask)
+    assert gate.shape == (2,)
+    assert gate[0] < 0.1
+    assert gate[1] > 0.8
