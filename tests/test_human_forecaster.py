@@ -1,6 +1,7 @@
 import torch
 
 from benchmark.human_forecaster import GRUHumanForecaster, motion_nonlinearity_gate
+from benchmark.human_motion_profiles import hesitation_speed_factor
 
 
 def test_gru_forecaster_shapes_sigma_and_gradients():
@@ -59,3 +60,15 @@ def test_motion_nonlinearity_gate_suppresses_residuals_for_steady_motion_and_ope
     assert gate.shape == (2,)
     assert gate[0] < 0.1
     assert gate[1] > 0.8
+
+
+def test_hesitation_profile_has_observable_deceleration_stop_and_smooth_restart():
+    pre = [hesitation_speed_factor(t) for t in range(20, 29)]
+    restart = [hesitation_speed_factor(t) for t in range(42, 51)]
+    assert pre[0] == 1.0
+    assert all(a >= b for a, b in zip(pre, pre[1:]))
+    assert pre[-1] == 0.0
+    assert hesitation_speed_factor(35) == 0.0
+    assert restart[0] > 0.0
+    assert all(a <= b for a, b in zip(restart, restart[1:]))
+    assert restart[-1] == 1.0
