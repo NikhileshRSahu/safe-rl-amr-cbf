@@ -62,6 +62,15 @@ def test_motion_nonlinearity_gate_suppresses_residuals_for_steady_motion_and_ope
     assert gate[1] > 0.8
 
 
+def test_motion_gate_detects_realistic_hesitation_deceleration_before_full_stop():
+    history = torch.zeros(1, 6, 5)
+    mask = torch.ones(1, 6, dtype=torch.bool)
+    # 0.46 m/s pedestrian decelerating by 0.0575 m/s each 0.1 s tick.
+    history[0, :, 2] = torch.tensor([0.46, 0.4025, 0.345, 0.2875, 0.23, 0.1725])
+    gate = motion_nonlinearity_gate(history, mask)
+    assert gate[0] > 0.7
+
+
 def test_hesitation_profile_has_observable_deceleration_stop_and_smooth_restart():
     pre = [hesitation_speed_factor(t) for t in range(20, 29)]
     restart = [hesitation_speed_factor(t) for t in range(42, 51)]
