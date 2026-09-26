@@ -9,6 +9,7 @@ on:
       - "benchmark/train_stasac_cbf.py"
       - "benchmark/stasac_training_runner.py"
       - "benchmark/best_vs_best_runner.py"
+      - "benchmark/train_human_forecaster.py"
       - "benchmark/human_*.py"
       - "benchmark/forecast_*.py"
       - "tests/test_forecast_warehouse_observation.py"
