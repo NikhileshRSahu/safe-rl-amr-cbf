@@ -19,16 +19,66 @@ def _stack(samples: list[ForecastSample], device="cpu"):
     return history, history_mask, future, future_mask
 
 
-def forecast_nll(output, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    valid = mask.unsqueeze(-1).expand_as(target)
-    if not valid.any():
-        return target.sum() * 0.0
+def constant_velocity_difficulty_weights(
+    history: torch.Tensor,
+    history_mask: torch.Tensor,
+    future: torch.Tensor,
+    future_mask: torch.Tensor,
+    *,
+    forecast_dt: float,
+    strength: float = 2.0,
+    max_weight: float = 4.0,
+) -> torch.Tensor:
+    """Weight training examples by how badly CV predicts their training labels.
+
+    This uses only gradient-training trajectories. It does not inspect forecast
+    evaluation, validation, or holdout labels. Straight motion stays near the
+    baseline weight while stop/restart/reversal samples receive more attention.
+    The returned weights are normalized to mean one so optimizer scale remains
+    stable when the hard-example strength changes.
+    """
+    if history.ndim != 3 or future.ndim != 3:
+        raise ValueError("history/future must be rank-3")
+    if history_mask.shape != history.shape[:2] or future_mask.shape != future.shape[:2]:
+        raise ValueError("mask shape mismatch")
+    n = history.shape[0]
+    if n == 0:
+        return history.new_zeros((0,))
+    positions = torch.arange(history.shape[1], device=history.device).unsqueeze(0).expand_as(history_mask)
+    invalid = torch.full_like(positions, -1)
+    last_idx = torch.where(history_mask, positions, invalid).max(dim=1).values.clamp(min=0)
+    batch_idx = torch.arange(n, device=history.device)
+    last_xy = history[batch_idx, last_idx, :2]
+    last_vel = history[batch_idx, last_idx, 2:4]
+    step_times = torch.arange(1, future.shape[1] + 1, device=future.device, dtype=future.dtype) * float(forecast_dt)
+    cv = last_xy[:, None, :] + last_vel[:, None, :] * step_times[None, :, None]
+    displacement = torch.linalg.norm(future - cv, dim=-1)
+    valid = future_mask.to(future.dtype)
+    difficulty = (displacement * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+    positive = difficulty[difficulty > 1e-6]
+    scale = positive.median() if positive.numel() else difficulty.new_tensor(1.0)
+    raw = 1.0 + float(strength) * difficulty / scale.clamp_min(1e-3)
+    raw = raw.clamp(max=float(max_weight))
+    return raw / raw.mean().clamp_min(1e-6)
+
+
+def forecast_nll(output, target: torch.Tensor, mask: torch.Tensor, sample_weights: torch.Tensor | None = None) -> torch.Tensor:
     sigma = output.sigma_xy.clamp_min(1e-4)
     nll = 0.5 * ((target - output.mean_xy) / sigma).pow(2) + torch.log(sigma)
-    return nll[valid].mean()
+    point = nll.mean(dim=-1)
+    valid = mask.to(target.dtype)
+    per_sample = (point * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+    if sample_weights is None:
+        return per_sample.mean()
+    return (per_sample * sample_weights).sum() / sample_weights.sum().clamp_min(1e-6)
 
 
-def horizon_weighted_mean_loss(output, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def horizon_weighted_mean_loss(
+    output,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Direct mean-trajectory loss with extra emphasis on later predictions."""
     if target.ndim != 3 or mask.shape != target.shape[:2]:
         raise ValueError("target/mask shape mismatch")
@@ -36,10 +86,11 @@ def horizon_weighted_mean_loss(output, target: torch.Tensor, mask: torch.Tensor)
         return target.sum() * 0.0
     point_loss = F.smooth_l1_loss(output.mean_xy, target, reduction="none").mean(dim=-1)
     weights = torch.linspace(1.0, 2.0, target.shape[1], device=target.device, dtype=target.dtype)
-    weighted = point_loss * weights.unsqueeze(0)
     valid_weights = mask.to(target.dtype) * weights.unsqueeze(0)
-    denominator = valid_weights.sum().clamp_min(1.0)
-    return (weighted * mask.to(target.dtype)).sum() / denominator
+    per_sample = (point_loss * valid_weights).sum(dim=1) / valid_weights.sum(dim=1).clamp_min(1.0)
+    if sample_weights is None:
+        return per_sample.mean()
+    return (per_sample * sample_weights).sum() / sample_weights.sum().clamp_min(1e-6)
 
 
 def forecast_training_loss(
@@ -48,9 +99,10 @@ def forecast_training_loss(
     mask: torch.Tensor,
     *,
     mean_loss_weight: float = 2.0,
+    sample_weights: torch.Tensor | None = None,
 ):
-    nll = forecast_nll(output, target, mask)
-    mean_loss = horizon_weighted_mean_loss(output, target, mask)
+    nll = forecast_nll(output, target, mask, sample_weights=sample_weights)
+    mean_loss = horizon_weighted_mean_loss(output, target, mask, sample_weights=sample_weights)
     total = nll + float(mean_loss_weight) * mean_loss
     return total, {"nll": nll.detach(), "mean_loss": mean_loss.detach()}
 
@@ -63,6 +115,7 @@ def train_forecaster(
     hidden_dim: int = 64,
     lr: float = 1e-3,
     mean_loss_weight: float = 2.0,
+    hard_example_weight: float = 2.0,
 ) -> tuple[GRUHumanForecaster, dict]:
     if not samples:
         raise ValueError("samples must not be empty")
@@ -80,6 +133,14 @@ def train_forecaster(
     model = GRUHumanForecaster(history_dim=5, hidden_dim=hidden_dim, steps=steps, horizon_seconds=horizon_seconds)
     opt = torch.optim.Adam(model.parameters(), lr=float(lr))
     history, history_mask, future, future_mask = _stack(samples)
+    sample_weights = constant_velocity_difficulty_weights(
+        history,
+        history_mask,
+        future,
+        future_mask,
+        forecast_dt=forecast_dt,
+        strength=float(hard_example_weight),
+    ).detach()
     losses = []
     last_parts = None
     for _ in range(max(1, int(epochs))):
@@ -89,6 +150,7 @@ def train_forecaster(
             future,
             future_mask,
             mean_loss_weight=float(mean_loss_weight),
+            sample_weights=sample_weights,
         )
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -105,6 +167,7 @@ def train_forecaster(
         "horizon_seconds": horizon_seconds,
         "hidden_dim": int(hidden_dim),
         "mean_loss_weight": float(mean_loss_weight),
+        "hard_example_weight": float(hard_example_weight),
         "final_loss": losses[-1],
         "final_nll": float(last_parts["nll"]) if last_parts is not None else None,
         "final_mean_loss": float(last_parts["mean_loss"]) if last_parts is not None else None,
