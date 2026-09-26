@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from benchmark.human_forecast_dataset import ForecastSample
 from benchmark.human_forecaster import GRUHumanForecaster
@@ -27,6 +28,33 @@ def forecast_nll(output, target: torch.Tensor, mask: torch.Tensor) -> torch.Tens
     return nll[valid].mean()
 
 
+def horizon_weighted_mean_loss(output, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Direct mean-trajectory loss with extra emphasis on later predictions."""
+    if target.ndim != 3 or mask.shape != target.shape[:2]:
+        raise ValueError("target/mask shape mismatch")
+    if target.shape[1] == 0:
+        return target.sum() * 0.0
+    point_loss = F.smooth_l1_loss(output.mean_xy, target, reduction="none").mean(dim=-1)
+    weights = torch.linspace(1.0, 2.0, target.shape[1], device=target.device, dtype=target.dtype)
+    weighted = point_loss * weights.unsqueeze(0)
+    valid_weights = mask.to(target.dtype) * weights.unsqueeze(0)
+    denominator = valid_weights.sum().clamp_min(1.0)
+    return (weighted * mask.to(target.dtype)).sum() / denominator
+
+
+def forecast_training_loss(
+    output,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    mean_loss_weight: float = 2.0,
+):
+    nll = forecast_nll(output, target, mask)
+    mean_loss = horizon_weighted_mean_loss(output, target, mask)
+    total = nll + float(mean_loss_weight) * mean_loss
+    return total, {"nll": nll.detach(), "mean_loss": mean_loss.detach()}
+
+
 def train_forecaster(
     samples: list[ForecastSample],
     *,
@@ -34,6 +62,7 @@ def train_forecaster(
     epochs: int = 20,
     hidden_dim: int = 64,
     lr: float = 1e-3,
+    mean_loss_weight: float = 2.0,
 ) -> tuple[GRUHumanForecaster, dict]:
     if not samples:
         raise ValueError("samples must not be empty")
@@ -52,14 +81,21 @@ def train_forecaster(
     opt = torch.optim.Adam(model.parameters(), lr=float(lr))
     history, history_mask, future, future_mask = _stack(samples)
     losses = []
+    last_parts = None
     for _ in range(max(1, int(epochs))):
         out = model(history, history_mask)
-        loss = forecast_nll(out, future, future_mask)
+        loss, parts = forecast_training_loss(
+            out,
+            future,
+            future_mask,
+            mean_loss_weight=float(mean_loss_weight),
+        )
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         opt.step()
         losses.append(float(loss.detach()))
+        last_parts = parts
     meta = {
         "architecture": "gru_human_forecaster_v1",
         "training_seeds": seeds,
@@ -68,7 +104,10 @@ def train_forecaster(
         "forecast_dt": forecast_dt,
         "horizon_seconds": horizon_seconds,
         "hidden_dim": int(hidden_dim),
+        "mean_loss_weight": float(mean_loss_weight),
         "final_loss": losses[-1],
+        "final_nll": float(last_parts["nll"]) if last_parts is not None else None,
+        "final_mean_loss": float(last_parts["mean_loss"]) if last_parts is not None else None,
     }
     return model, meta
 
