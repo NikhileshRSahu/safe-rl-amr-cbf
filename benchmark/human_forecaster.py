@@ -14,6 +14,39 @@ class TorchForecastOutput:
     mask: torch.Tensor
 
 
+def motion_nonlinearity_gate(
+    history: torch.Tensor,
+    history_mask: torch.Tensor,
+    *,
+    onset_mps: float = 0.03,
+    full_mps: float = 0.23,
+) -> torch.Tensor:
+    """Return a causal [0,1] gate from observed velocity changes only.
+
+    Constant velocity is a very strong warehouse pedestrian baseline. Learned
+    residuals should therefore be trusted only after the observed track shows
+    evidence of a stop, restart, reversal, or turn. This avoids perturbing CV
+    before an intrinsically unobservable sudden hesitation while still opening
+    the learned correction immediately after nonlinear motion becomes visible.
+    """
+    if history.ndim != 3 or history.shape[-1] < 4:
+        raise ValueError("history must have shape [N,T,D>=4]")
+    if history_mask.shape != history.shape[:2]:
+        raise ValueError("history_mask shape mismatch")
+    n, t, _ = history.shape
+    if n == 0:
+        return history.new_zeros((0,))
+    if t < 2:
+        return history.new_zeros((n,))
+    vel = history[..., 2:4]
+    dv = torch.linalg.norm(vel[:, 1:] - vel[:, :-1], dim=-1)
+    valid_pair = history_mask[:, 1:] & history_mask[:, :-1]
+    dv = torch.where(valid_pair, dv, torch.zeros_like(dv))
+    max_dv = dv.max(dim=1).values
+    width = max(float(full_mps) - float(onset_mps), 1e-6)
+    return ((max_dv - float(onset_mps)) / width).clamp(0.0, 1.0)
+
+
 class GRUHumanForecaster(nn.Module):
     """Shared per-track causal GRU residual forecaster over constant velocity."""
 
@@ -62,7 +95,8 @@ class GRUHumanForecaster(nn.Module):
             * float(forecast_dt)
         )
         cv_mean = last_xy[:, None, :] + last_vel[:, None, :] * step_times[None, :, None]
-        mean_xy = cv_mean + residual
+        residual_gate = motion_nonlinearity_gate(history, history_mask)
+        mean_xy = cv_mean + residual * residual_gate[:, None, None]
 
         valid_track = history_mask.any(dim=1)
         mask = valid_track[:, None].expand(n, self.steps)
