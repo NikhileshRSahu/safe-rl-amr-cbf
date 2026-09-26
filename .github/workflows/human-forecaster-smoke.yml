@@ -1,0 +1,63 @@
+name: Human Forecaster Smoke
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - "benchmark/human_forecast_dataset.py"
+      - "benchmark/human_forecaster.py"
+      - "benchmark/train_human_forecaster.py"
+      - "benchmark/evaluate_human_forecaster.py"
+      - ".github/workflows/human-forecaster-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Train and evaluate causal forecaster
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from benchmark.best_vs_best_protocol import local_human_navigation_catalog
+          from benchmark.human_forecast_dataset import collect_world_forecast_samples
+          from benchmark.train_human_forecaster import train_forecaster, save_forecaster_checkpoint
+          from benchmark.evaluate_human_forecaster import evaluate_forecaster, evaluate_constant_velocity
+
+          catalog={s.name:s for s in local_human_navigation_catalog()}
+          samples=[]
+          for name,seed in [('human_hesitation',10100),('human_reversal',10101),('dense_human_flow',10102)]:
+              samples += collect_world_forecast_samples(catalog[name], seed, world_steps=70, history_len=8, horizon_steps=6, stride=5, max_humans=4)
+          model,meta=train_forecaster(samples, seed=71, epochs=3, hidden_dim=32)
+          out=Path('results/human_forecaster_smoke'); out.mkdir(parents=True,exist_ok=True)
+          digest=save_forecaster_checkpoint(out/'human_forecaster.pt', model, meta)
+          learned=evaluate_forecaster(model,samples)
+          cv=evaluate_constant_velocity(samples,horizon_seconds=1.5)
+          report={'metadata':meta,'sha256':digest,'learned':learned,'constant_velocity':cv,'sample_count':len(samples)}
+          (out/'report.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          assert len(samples)>0
+          assert meta['training_seeds']==[10100,10101,10102]
+          assert learned['ade']>=0 and learned['fde']>=0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: human-forecaster-smoke
+          path: results/human_forecaster_smoke/
+          if-no-files-found: error
