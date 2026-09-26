@@ -40,10 +40,10 @@ def train_forecaster(
     seeds = sorted({int(s.seed) for s in samples})
     if any(seed_value < 10100 or seed_value > 10115 for seed_value in seeds):
         raise ValueError("forecaster training samples must use only seeds 10100-10115")
-    forecast_dts = {round(float(s.forecast_dt), 6) for s in samples}
-    if len(forecast_dts) != 1:
+    forecast_dts = np.asarray([float(s.forecast_dt) for s in samples], dtype=np.float64)
+    forecast_dt = float(np.median(forecast_dts))
+    if not np.allclose(forecast_dts, forecast_dt, rtol=0.0, atol=2e-5):
         raise ValueError("all forecaster samples must share one forecast_dt")
-    forecast_dt = float(next(iter(forecast_dts)))
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     steps = int(samples[0].future_xy.shape[0])
@@ -85,11 +85,7 @@ def load_forecaster_checkpoint(path):
     payload = torch.load(path, map_location="cpu", weights_only=False)
     meta = dict(payload["metadata"])
     horizon_seconds = float(meta.get("horizon_seconds", float(meta.get("forecast_steps", 8)) * float(meta.get("forecast_dt", 0.25))))
-    model = GRUHumanForecaster(
-        hidden_dim=int(meta["hidden_dim"]),
-        steps=int(meta["forecast_steps"]),
-        horizon_seconds=horizon_seconds,
-    )
+    model = GRUHumanForecaster(hidden_dim=int(meta["hidden_dim"]), steps=int(meta["forecast_steps"]), horizon_seconds=horizon_seconds)
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return model, meta
