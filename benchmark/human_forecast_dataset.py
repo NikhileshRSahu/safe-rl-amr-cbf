@@ -7,6 +7,8 @@ import numpy as np
 
 TRAINING_SEED_MIN = 10100
 TRAINING_SEED_MAX = 10115
+FORECAST_EVAL_SEED_MIN = 10116
+FORECAST_EVAL_SEED_MAX = 10119
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,12 @@ def assert_training_seed_allowed(seed: int) -> None:
         raise ValueError(f"seed {seed} is not in forecast gradient-training split 10100-10115")
 
 
+def assert_evaluation_seed_allowed(seed: int) -> None:
+    seed = int(seed)
+    if not (FORECAST_EVAL_SEED_MIN <= seed <= FORECAST_EVAL_SEED_MAX):
+        raise ValueError(f"seed {seed} is not in forecast evaluation split 10116-10119")
+
+
 def make_forecast_sample(
     timestamps,
     positions,
@@ -43,8 +51,10 @@ def make_forecast_sample(
     scenario: str,
     seed: int,
     future_stride: int = 1,
+    enforce_training_seed: bool = True,
 ) -> ForecastSample:
-    assert_training_seed_allowed(seed)
+    if enforce_training_seed:
+        assert_training_seed_allowed(seed)
     ts = np.asarray(timestamps, dtype=np.float32)
     xy = np.asarray(positions, dtype=np.float32)
     if ts.ndim != 1 or xy.shape != (len(ts), 2):
@@ -97,13 +107,24 @@ def collect_world_forecast_samples(
     stride: int = 2,
     forecast_step_stride: int = 3,
     max_humans: int | None = None,
+    split: str = "train",
 ) -> list[ForecastSample]:
     """Collect causal warehouse forecast samples; future truth is labels only.
 
-    With simulator DT=0.1, the default target spacing is 0.3 s and six
-    forecast points cover a 1.8 s prediction horizon.
+    `split='train'` accepts only 10100-10115. `split='eval'` accepts only
+    10116-10119. Neither validation nor final holdout seeds are accepted.
+    With simulator DT=0.1, six default targets spaced by three simulator
+    ticks cover a 1.8 s horizon.
     """
-    assert_training_seed_allowed(seed)
+    if split == "train":
+        assert_training_seed_allowed(seed)
+        enforce_training_seed = True
+    elif split == "eval":
+        assert_evaluation_seed_allowed(seed)
+        enforce_training_seed = False
+    else:
+        raise ValueError("split must be 'train' or 'eval'")
+
     from benchmark.warehouse_scenario_world import make_scenario_world
     from benchmark.train_multi_agent_research import DT
 
@@ -135,6 +156,7 @@ def collect_world_forecast_samples(
                     scenario=spec.name,
                     seed=int(seed),
                     future_stride=int(forecast_step_stride),
+                    enforce_training_seed=enforce_training_seed,
                 )
             )
     return samples
