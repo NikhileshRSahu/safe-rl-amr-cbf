@@ -29,6 +29,9 @@ class GRUHumanForecaster(nn.Module):
             nn.ReLU(),
             nn.Linear(self.hidden_dim, self.steps * 4),
         )
+        # Start exactly at the analytical constant-velocity baseline.
+        nn.init.zeros_(self.head[-1].weight)
+        nn.init.zeros_(self.head[-1].bias)
 
     def forward(self, history: torch.Tensor, history_mask: torch.Tensor) -> TorchForecastOutput:
         if history.ndim != 3 or history.shape[-1] != self.history_dim:
