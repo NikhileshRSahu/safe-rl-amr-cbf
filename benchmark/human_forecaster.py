@@ -18,16 +18,16 @@ def motion_nonlinearity_gate(
     history: torch.Tensor,
     history_mask: torch.Tensor,
     *,
-    onset_mps: float = 0.03,
-    full_mps: float = 0.23,
+    onset_mps: float = 0.01,
+    full_mps: float = 0.07,
 ) -> torch.Tensor:
     """Return a causal [0,1] gate from observed velocity changes only.
 
     Constant velocity is a very strong warehouse pedestrian baseline. Learned
     residuals should therefore be trusted only after the observed track shows
-    evidence of a stop, restart, reversal, or turn. This avoids perturbing CV
-    before an intrinsically unobservable sudden hesitation while still opening
-    the learned correction immediately after nonlinear motion becomes visible.
+    evidence of a stop, restart, reversal, or turn. Thresholds are matched to
+    physically realistic pedestrian deceleration: a ~0.05-0.06 m/s velocity
+    change per simulator tick is already strong evidence of changing intent.
     """
     if history.ndim != 3 or history.shape[-1] < 4:
         raise ValueError("history must have shape [N,T,D>=4]")
