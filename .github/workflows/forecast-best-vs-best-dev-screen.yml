@@ -1,6 +1,10 @@
 name: Forecast Three-Way Development Screen
 
 on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - ".github/workflows/forecast-best-vs-best-dev-screen.yml"
   workflow_dispatch:
     inputs:
       seeds:
@@ -21,6 +25,8 @@ jobs:
     timeout-minutes: 180
     env:
       PYTHONPATH: .
+      NSEEDS: ${{ inputs.seeds || '3' }}
+      TRAIN_STEPS: ${{ inputs.train_steps || '2000' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,20 +47,19 @@ jobs:
           catalog={s.name:s for s in local_human_navigation_catalog()}
           samples=[]
           for idx,name in enumerate(['human_hesitation','human_reversal','dense_human_flow','mixed_local_traffic']):
-              samples += collect_world_forecast_samples(catalog[name],10100+idx,world_steps=100,history_len=8,horizon_steps=6,stride=4,max_humans=6)
+              samples += collect_world_forecast_samples(catalog[name],10100+idx,world_steps=120,history_len=8,horizon_steps=6,stride=4,forecast_step_stride=3,max_humans=6)
           model,meta=train_forecaster(samples,seed=71,epochs=8,hidden_dim=64)
+          assert abs(meta['horizon_seconds']-1.8) < 1e-4, meta
           out=Path('results/forecast_dev'); out.mkdir(parents=True,exist_ok=True)
           save_forecaster_checkpoint(out/'forecaster.pt',model,meta)
           PY
       - name: Train matched base STASAC
         run: |
-          python -m benchmark.stasac_training_runner --agent-steps ${{ inputs.train_steps || '2000' }} --seed 71 --out results/forecast_dev/base --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999
+          python -m benchmark.stasac_training_runner --agent-steps "$TRAIN_STEPS" --seed 71 --out results/forecast_dev/base --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999
       - name: Train matched forecast STASAC
         run: |
-          python -m benchmark.stasac_training_runner --agent-steps ${{ inputs.train_steps || '2000' }} --seed 71 --out results/forecast_dev/forecast --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999 --forecaster-checkpoint results/forecast_dev/forecaster.pt
+          python -m benchmark.stasac_training_runner --agent-steps "$TRAIN_STEPS" --seed 71 --out results/forecast_dev/forecast --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999 --forecaster-checkpoint results/forecast_dev/forecaster.pt
       - name: Run paired three-way development screen
-        env:
-          NSEEDS: ${{ inputs.seeds || '3' }}
         run: |
           python - <<'PY'
           import json, os
@@ -70,7 +75,8 @@ jobs:
           forecast,_,_=load_stasac_checkpoint('results/forecast_dev/forecast/stasac_cbf.pt')
           forecaster,_=load_forecaster_checkpoint('results/forecast_dev/forecaster.pt')
           result=run_three_way_development_screen(base,forecast,forecaster,scenarios,seeds,max_steps=600)
-          out=Path('results/forecast_dev/three_way.json'); out.write_text(json.dumps({'seeds':list(seeds),'results':result},indent=2))
+          out=Path('results/forecast_dev/three_way.json')
+          out.write_text(json.dumps({'seeds':list(seeds),'results':result},indent=2))
           print(json.dumps({'seeds':list(seeds),'aggregates':{k:v['aggregate'] for k,v in result.items()}},indent=2))
           assert all(10300 <= s <= 10319 for s in seeds)
           PY
