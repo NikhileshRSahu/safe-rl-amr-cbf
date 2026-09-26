@@ -13,7 +13,11 @@ from benchmark.adaptive_predictive_orca import (
     AdaptiveORCAConfig,
 )
 from benchmark.beast_config import load_beast_config
-from benchmark.best_vs_best_protocol import ScenarioSpec, scenario_catalog, split_seed_sets
+from benchmark.best_vs_best_protocol import (
+    ScenarioSpec,
+    local_human_navigation_catalog,
+    split_seed_sets,
+)
 from benchmark.orca_teacher import bc_coefficient, normalize_teacher_action
 from benchmark.spatiotemporal_policy import STASACActor, TwinRecurrentQ, reset_hidden
 from benchmark.stasac_warehouse import EGO_DIM, WarehouseObservationBuilder, make_training_world
@@ -26,18 +30,8 @@ from benchmark.train_stasac_cbf import (
 
 
 def training_curriculum() -> tuple[ScenarioSpec, ...]:
-    """Warehouse scenarios available to the learner before validation freeze."""
-    wanted = {
-        "cross_intersection",
-        "shelf_corner",
-        "hesitation",
-        "mixed_behavior",
-        "density_06",
-        "density_12",
-        "density_18",
-        "density_24",
-    }
-    return tuple(s for s in scenario_catalog() if s.name in wanted)
+    """Human-focused local navigation curriculum used before validation freeze."""
+    return local_human_navigation_catalog()
 
 
 def training_seed_for_episode(episode_index: int) -> int:
@@ -76,11 +70,10 @@ def collect_training_episode(
     adaptive_config: AdaptiveORCAConfig | None = None,
     deterministic_actor: bool = False,
 ):
-    """Collect one real multi-AMR warehouse rollout.
+    """Collect one warehouse local-navigation rollout.
 
-    STASAC always supplies the policy action. AP-ORCA is queried only to create
-    a teacher target and, during the explicit warm-start fraction, to mix a
-    bounded teacher command into data collection. Deployment never calls ORCA.
+    STASAC supplies the policy action. AP-ORCA is queried only for the explicit
+    warm-start teacher target. Deployment never calls ORCA.
     """
     teacher_mix = float(np.clip(teacher_mix, 0.0, 1.0))
     world = make_training_world(spec, int(seed))
@@ -114,7 +107,7 @@ def collect_training_episode(
             hidden[i] = next_hidden
 
             physical_teacher = teacher_controllers[i].action(world)
-            teacher_action = normalize_teacher_action(
+            normalize_teacher_action(
                 v=(float(physical_teacher[0]) + 1.0) * 0.5 * VMAX,
                 omega=float(physical_teacher[1]) * WMAX,
                 v_max=VMAX,
@@ -262,6 +255,7 @@ def train_stasac(
         "seed": int(seed),
         "updates": int(update_count),
         "architecture": "spatiotemporal_risk_attention_sac_cbf_v1",
+        "benchmark_focus": "human_aware_local_navigation",
         "ego_dim": EGO_DIM,
         "teacher_warm_fraction": 0.15,
         "final_bc_coefficient": bc_coefficient(global_agent_steps, total_target),
