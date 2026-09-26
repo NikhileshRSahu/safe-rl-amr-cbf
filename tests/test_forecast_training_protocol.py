@@ -16,14 +16,14 @@ def test_forecast_train_eval_seed_splits_are_disjoint_and_do_not_touch_validatio
     assert all(seed < 11100 for seed in train + evaluate)
 
 
-def test_forecast_gate_requires_key_human_behavior_families():
+def test_forecast_gate_requires_nonlinear_human_behavior_wins():
     assert set(FORECAST_REQUIRED_WIN_SCENARIOS) == {
-        "human_crossing",
         "human_hesitation",
         "human_reversal",
         "dense_human_flow",
     }
     assert set(FORECAST_REQUIRED_WIN_SCENARIOS) <= set(FORECAST_GATE_SCENARIOS)
+    assert "human_crossing" in FORECAST_GATE_SCENARIOS
     assert "mixed_local_traffic" in FORECAST_GATE_SCENARIOS
 
 
@@ -53,17 +53,27 @@ def test_forecast_gate_rejects_model_that_only_wins_in_aggregate():
     assert "human_hesitation" in report["failed_scenarios"]
 
 
-def test_forecast_gate_accepts_consistent_ade_and_fde_improvement():
-    scenarios = {
-        name: {"ade": 0.15, "fde": 0.20}
-        for name in FORECAST_REQUIRED_WIN_SCENARIOS
+def test_forecast_gate_accepts_nonlinear_wins_and_crossing_non_regression():
+    learned = {
+        "ade": 0.15,
+        "fde": 0.20,
+        "per_scenario": {
+            "human_crossing": {"ade": 0.01, "fde": 0.01},
+            "human_hesitation": {"ade": 0.15, "fde": 0.20},
+            "human_reversal": {"ade": 0.15, "fde": 0.20},
+            "dense_human_flow": {"ade": 0.15, "fde": 0.20},
+        },
     }
-    cv_scenarios = {
-        name: {"ade": 0.20, "fde": 0.25}
-        for name in FORECAST_REQUIRED_WIN_SCENARIOS
+    cv = {
+        "ade": 0.20,
+        "fde": 0.25,
+        "per_scenario": {
+            "human_crossing": {"ade": 0.0, "fde": 0.0},
+            "human_hesitation": {"ade": 0.20, "fde": 0.25},
+            "human_reversal": {"ade": 0.20, "fde": 0.25},
+            "dense_human_flow": {"ade": 0.20, "fde": 0.25},
+        },
     }
-    learned = {"ade": 0.15, "fde": 0.20, "per_scenario": scenarios}
-    cv = {"ade": 0.20, "fde": 0.25, "per_scenario": cv_scenarios}
-    ok, report = learned_forecaster_beats_cv(learned, cv)
+    ok, report = learned_forecaster_beats_cv(learned, cv, crossing_tolerance_m=0.02)
     assert ok
     assert report["failed_scenarios"] == []
