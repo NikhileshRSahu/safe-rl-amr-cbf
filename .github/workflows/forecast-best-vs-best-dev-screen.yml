@@ -1,0 +1,81 @@
+name: Forecast Three-Way Development Screen
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Number of development seeds from 10300 onward"
+        required: false
+        default: "3"
+      train_steps:
+        description: "Agent steps per STASAC candidate for development smoke screen"
+        required: false
+        default: "2000"
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build development forecaster
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from benchmark.best_vs_best_protocol import local_human_navigation_catalog
+          from benchmark.human_forecast_dataset import collect_world_forecast_samples
+          from benchmark.train_human_forecaster import train_forecaster, save_forecaster_checkpoint
+          catalog={s.name:s for s in local_human_navigation_catalog()}
+          samples=[]
+          for idx,name in enumerate(['human_hesitation','human_reversal','dense_human_flow','mixed_local_traffic']):
+              samples += collect_world_forecast_samples(catalog[name],10100+idx,world_steps=100,history_len=8,horizon_steps=6,stride=4,max_humans=6)
+          model,meta=train_forecaster(samples,seed=71,epochs=8,hidden_dim=64)
+          out=Path('results/forecast_dev'); out.mkdir(parents=True,exist_ok=True)
+          save_forecaster_checkpoint(out/'forecaster.pt',model,meta)
+          PY
+      - name: Train matched base STASAC
+        run: |
+          python -m benchmark.stasac_training_runner --agent-steps ${{ inputs.train_steps || '2000' }} --seed 71 --out results/forecast_dev/base --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999
+      - name: Train matched forecast STASAC
+        run: |
+          python -m benchmark.stasac_training_runner --agent-steps ${{ inputs.train_steps || '2000' }} --seed 71 --out results/forecast_dev/forecast --max-episode-steps 300 --burn-in 4 --train-len 8 --batch-size 8 --gate-interval-episodes 999 --forecaster-checkpoint results/forecast_dev/forecaster.pt
+      - name: Run paired three-way development screen
+        env:
+          NSEEDS: ${{ inputs.seeds || '3' }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from benchmark.best_vs_best_protocol import local_human_navigation_catalog, development_evaluation_seeds
+          from benchmark.best_vs_best_runner import run_three_way_development_screen
+          from benchmark.train_human_forecaster import load_forecaster_checkpoint
+          from benchmark.train_stasac_cbf import load_stasac_checkpoint
+          n=max(1,min(20,int(os.environ['NSEEDS'])))
+          seeds=development_evaluation_seeds()[:n]
+          scenarios=local_human_navigation_catalog()
+          base,_,_=load_stasac_checkpoint('results/forecast_dev/base/stasac_cbf.pt')
+          forecast,_,_=load_stasac_checkpoint('results/forecast_dev/forecast/stasac_cbf.pt')
+          forecaster,_=load_forecaster_checkpoint('results/forecast_dev/forecaster.pt')
+          result=run_three_way_development_screen(base,forecast,forecaster,scenarios,seeds,max_steps=600)
+          out=Path('results/forecast_dev/three_way.json'); out.write_text(json.dumps({'seeds':list(seeds),'results':result},indent=2))
+          print(json.dumps({'seeds':list(seeds),'aggregates':{k:v['aggregate'] for k,v in result.items()}},indent=2))
+          assert all(10300 <= s <= 10319 for s in seeds)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forecast-three-way-dev-screen
+          path: results/forecast_dev/
+          if-no-files-found: error
