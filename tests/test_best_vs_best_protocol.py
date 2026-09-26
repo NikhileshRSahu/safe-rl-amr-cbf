@@ -10,6 +10,7 @@ from benchmark.adaptive_predictive_orca import (
 from benchmark.best_vs_best_protocol import (
     ScenarioSpec,
     development_evaluation_seeds,
+    local_human_navigation_catalog,
     paired_world_fingerprint,
     scenario_catalog,
     split_seed_sets,
@@ -56,6 +57,23 @@ def test_scenario_catalog_contains_real_warehouse_failure_modes_and_density_ladd
     density = sorted(s.humans for s in specs if s.family == "density")
     assert density == [6, 12, 18, 24]
     assert all(isinstance(s, ScenarioSpec) for s in specs)
+
+
+def test_primary_local_navigation_catalog_is_human_focused_not_fleet_deadlock_focused():
+    specs = local_human_navigation_catalog()
+    names = {s.name for s in specs}
+    assert {
+        "human_crossing",
+        "blind_shelf_corner",
+        "human_hesitation",
+        "human_reversal",
+        "forklift_crossing",
+        "dense_human_flow",
+    } <= names
+    assert all(1 <= s.n_amr <= 2 for s in specs)
+    assert sum(s.n_amr == 1 for s in specs) >= 5
+    assert all(s.humans >= 1 for s in specs)
+    assert not any(s.family == "fleet_deadlock" for s in specs)
 
 
 def test_paired_world_fingerprint_is_identical_for_same_seed_and_changes_for_other_seed():
