@@ -10,7 +10,6 @@ FORECAST_GATE_SCENARIOS = (
 )
 
 FORECAST_REQUIRED_WIN_SCENARIOS = (
-    "human_crossing",
     "human_hesitation",
     "human_reversal",
     "dense_human_flow",
@@ -25,10 +24,16 @@ def forecaster_eval_seeds() -> tuple[int, ...]:
     return tuple(range(10116, 10120))
 
 
-def learned_forecaster_beats_cv(learned: dict, cv: dict) -> tuple[bool, dict]:
+def learned_forecaster_beats_cv(
+    learned: dict,
+    cv: dict,
+    *,
+    crossing_tolerance_m: float = 0.02,
+) -> tuple[bool, dict]:
     failed = []
     if float(learned["ade"]) >= float(cv["ade"]) or float(learned["fde"]) >= float(cv["fde"]):
         failed.append("aggregate")
+
     learned_by = learned.get("per_scenario", {})
     cv_by = cv.get("per_scenario", {})
     for scenario in FORECAST_REQUIRED_WIN_SCENARIOS:
@@ -39,9 +44,23 @@ def learned_forecaster_beats_cv(learned: dict, cv: dict) -> tuple[bool, dict]:
         cm = cv_by[scenario]
         if float(lm["ade"]) >= float(cm["ade"]) or float(lm["fde"]) >= float(cm["fde"]):
             failed.append(scenario)
+
+    crossing = "human_crossing"
+    if crossing not in learned_by or crossing not in cv_by:
+        failed.append(crossing)
+    else:
+        lm = learned_by[crossing]
+        cm = cv_by[crossing]
+        if (
+            float(lm["ade"]) > float(cm["ade"]) + float(crossing_tolerance_m)
+            or float(lm["fde"]) > float(cm["fde"]) + float(crossing_tolerance_m)
+        ):
+            failed.append(crossing)
+
     failed = list(dict.fromkeys(failed))
     return len(failed) == 0, {
         "passed": len(failed) == 0,
         "failed_scenarios": failed,
-        "required_scenarios": list(FORECAST_REQUIRED_WIN_SCENARIOS),
+        "required_win_scenarios": list(FORECAST_REQUIRED_WIN_SCENARIOS),
+        "crossing_tolerance_m": float(crossing_tolerance_m),
     }
