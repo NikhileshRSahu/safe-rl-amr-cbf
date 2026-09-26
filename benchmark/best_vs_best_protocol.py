@@ -20,7 +20,7 @@ class ScenarioSpec:
 
 
 def scenario_catalog() -> tuple[ScenarioSpec, ...]:
-    """Warehouse-relevant scenario families used before final holdout."""
+    """Legacy broad stress catalog retained for ablations and regression tests."""
     return (
         ScenarioSpec("cross_intersection", "intent", 12, 4, 1.0, "medium"),
         ScenarioSpec("shelf_corner", "occlusion", 12, 4, 1.0, "medium"),
@@ -30,6 +30,25 @@ def scenario_catalog() -> tuple[ScenarioSpec, ...]:
         ScenarioSpec("density_12", "density", 12, 4, 1.0, "medium"),
         ScenarioSpec("density_18", "density", 18, 4, 1.0, "medium"),
         ScenarioSpec("density_24", "density", 24, 4, 1.0, "medium"),
+    )
+
+
+def local_human_navigation_catalog() -> tuple[ScenarioSpec, ...]:
+    """Primary warehouse local-navigation benchmark.
+
+    Fleet scheduling/deadlock is intentionally removed from the decisive test.
+    The route is assumed to be assigned upstream; the local controller must
+    navigate human-driven uncertainty using one AMR in the core scenarios.
+    A two-AMR case is retained only as a secondary mixed-traffic stress test.
+    """
+    return (
+        ScenarioSpec("human_crossing", "human_local", 6, 1, 1.0, "medium"),
+        ScenarioSpec("blind_shelf_corner", "occlusion", 4, 1, 1.0, "medium"),
+        ScenarioSpec("human_hesitation", "human_local", 6, 1, 1.0, "high"),
+        ScenarioSpec("human_reversal", "human_local", 6, 1, 1.0, "high"),
+        ScenarioSpec("forklift_crossing", "vehicle_like", 2, 1, 1.15, "medium"),
+        ScenarioSpec("dense_human_flow", "human_density", 12, 1, 1.0, "high"),
+        ScenarioSpec("mixed_local_traffic", "mixed_local", 10, 2, 1.0, "high"),
     )
 
 
