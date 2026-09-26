@@ -33,15 +33,19 @@ def test_gru_forecaster_is_permutation_equivariant_and_handles_empty_tracks():
     assert empty.mean_xy.shape == (0, 4, 2)
 
 
-def test_left_padded_history_anchors_prediction_at_last_valid_observation():
-    model = GRUHumanForecaster(hidden_dim=8, steps=3)
+def test_zero_residual_head_reproduces_constant_velocity_baseline():
+    model = GRUHumanForecaster(hidden_dim=8, steps=3, horizon_seconds=0.9)
     for p in model.head.parameters():
         p.data.zero_()
     history = torch.zeros(1, 5, 5)
     mask = torch.tensor([[False, False, True, True, True]])
-    history[0, 2, :2] = torch.tensor([1.0, 1.0])
-    history[0, 3, :2] = torch.tensor([2.0, 1.5])
-    history[0, 4, :2] = torch.tensor([3.0, 2.0])
+    history[0, 2, :4] = torch.tensor([1.0, 1.0, 0.5, -0.25])
+    history[0, 3, :4] = torch.tensor([2.0, 1.5, 0.5, -0.25])
+    history[0, 4, :4] = torch.tensor([3.0, 2.0, 0.5, -0.25])
     out = model(history, mask)
-    expected = torch.tensor([[3.0, 2.0]]).repeat(3, 1)
+    dt = 0.3
+    expected = torch.stack([
+        torch.tensor([3.0, 2.0]) + (k + 1) * dt * torch.tensor([0.5, -0.25])
+        for k in range(3)
+    ])
     assert torch.allclose(out.mean_xy[0], expected, atol=1e-6)
