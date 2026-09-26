@@ -6,6 +6,7 @@ from benchmark.spatiotemporal_policy import STASACActor
 from benchmark.stasac_training_runner import (
     collect_training_episode,
     training_curriculum,
+    training_curriculum_stages,
     training_seed_for_episode,
 )
 from benchmark.stasac_warehouse import EGO_DIM
@@ -26,6 +27,17 @@ def test_training_curriculum_is_human_focused_local_navigation():
     assert all(1 <= s.n_amr <= 2 for s in curriculum)
     assert sum(s.n_amr == 1 for s in curriculum) >= 5
     assert not any(s.family == "fleet_deadlock" for s in curriculum)
+
+
+def test_curriculum_stages_increase_interaction_difficulty_and_leave_two_amr_case_last():
+    stages = training_curriculum_stages()
+    assert len(stages) == 4
+    assert {s.name for s in stages[0]} == {"human_crossing", "blind_shelf_corner"}
+    assert {s.name for s in stages[1]} == {"human_hesitation", "human_reversal"}
+    assert {s.name for s in stages[2]} == {"forklift_crossing", "dense_human_flow"}
+    assert {s.name for s in stages[3]} == {"mixed_local_traffic"}
+    assert all(s.n_amr == 1 for stage in stages[:3] for s in stage)
+    assert stages[3][0].n_amr == 2
 
 
 def test_training_seed_schedule_never_leaks_validation_or_holdout():
@@ -55,8 +67,6 @@ def test_short_real_episode_collects_bounded_actor_and_teacher_actions_with_vari
     assert all("teacher_action" in t for t in transitions)
     assert all(np.max(np.abs(t["action"])) <= 1.0 + 1e-6 for t in transitions)
     assert all(np.max(np.abs(t["teacher_action"])) <= 1.0 + 1e-6 for t in transitions)
-    # Zero visible entities is valid under causal range/occlusion sensing; the
-    # representation must remain a well-formed variable-size 2-D set.
     assert all(t["entities"].ndim == 2 for t in transitions)
     assert all(len(t["entities"]) <= spec.humans + spec.n_amr - 1 for t in transitions)
     assert all(np.isfinite(t["ego"]).all() for t in transitions)
