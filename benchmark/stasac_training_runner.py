@@ -50,6 +50,18 @@ def training_curriculum_stages() -> tuple[tuple[ScenarioSpec, ...], ...]:
     )
 
 
+def competence_gate_max_steps(training_max_steps: int) -> int:
+    """Use a physically meaningful horizon for competence measurements.
+
+    Smoke rollouts are intentionally truncated for CI speed.  Reusing that
+    truncated horizon for policy/teacher competence makes both look like
+    failures and can incorrectly remove teacher support.  The gate therefore
+    gets at least 300 simulator steps, while normal 600-step research runs keep
+    their full horizon unchanged.
+    """
+    return max(300, int(training_max_steps))
+
+
 def curriculum_gate_seeds() -> tuple[int, ...]:
     """Development-only seeds withheld from gradient collection for competence gates."""
     dev_seeds, _, _ = split_seed_sets(frozen=False)
@@ -268,6 +280,7 @@ def train_stasac(
 
     stages = training_curriculum_stages()
     total_target = max(1, int(agent_steps))
+    gate_max_steps = competence_gate_max_steps(max_episode_steps)
     global_agent_steps = 0
     episode_index = 0
     update_count = 0
@@ -335,15 +348,14 @@ def train_stasac(
         print(json.dumps(row), flush=True)
 
         if stage_episode_index % max(1, int(gate_interval_episodes)) == 0:
-            probe_rows = _policy_only_gate_rows(actor, stage, max_steps=max_episode_steps)
+            probe_rows = _policy_only_gate_rows(actor, stage, max_steps=gate_max_steps)
             policy_gate_history.extend(probe_rows)
-            # Keep the competence decision local to the current stage.
             policy_gate_history = policy_gate_history[-12:]
             policy_rates = _rate_summary(policy_gate_history)
 
             if current_stage not in teacher_gate_cache:
                 teacher_gate_cache[current_stage] = _rate_summary(
-                    _teacher_gate_rows(stage, max_steps=max_episode_steps)
+                    _teacher_gate_rows(stage, max_steps=gate_max_steps)
                 )
             teacher_rates = teacher_gate_cache[current_stage]
             teacher_coeff = performance_gated_bc_coefficient(
@@ -360,6 +372,7 @@ def train_stasac(
             gate_row = {
                 "after_episode": int(episode_index),
                 "stage": int(current_stage),
+                "gate_max_steps": int(gate_max_steps),
                 "policy": policy_rates,
                 "teacher": teacher_rates,
                 "next_bc_coefficient": float(teacher_coeff),
@@ -372,8 +385,6 @@ def train_stasac(
                 current_stage += 1
                 stage_episode_index = 0
                 policy_gate_history = []
-                # New difficulty starts with full teacher support until the first
-                # policy-only competence probe measures otherwise.
                 teacher_coeff = 1.0
 
     metadata = {
@@ -390,6 +401,7 @@ def train_stasac(
         "training_seed_split": "development_gradient_only",
         "competence_gate_seeds": list(curriculum_gate_seeds()),
         "max_episode_steps": int(max_episode_steps),
+        "competence_gate_max_steps": int(gate_max_steps),
     }
     save_stasac_checkpoint(out / "stasac_cbf.pt", actor, q, metadata=metadata)
     payload = {"metadata": metadata, "episodes": logs, "competence_gates": gate_logs}
