@@ -4,7 +4,9 @@ on:
   push:
     branches: [research/beast-baselines-v1]
     paths:
+      - "benchmark/best_vs_best_runner.py"
       - "benchmark/select_fully_trained_forecast_stasac.py"
+      - "benchmark/select_peak_ap_orca.py"
       - "benchmark/run_frozen_forecast_vs_peak_orca.py"
       - "tests/test_frozen_forecast_selection.py"
       - ".github/workflows/frozen-forecast-eval-protocol-tests.yml"
@@ -32,7 +34,9 @@ jobs:
       - name: Compile frozen protocol scripts
         run: |
           python -m py_compile \
+            benchmark/best_vs_best_runner.py \
             benchmark/select_fully_trained_forecast_stasac.py \
+            benchmark/select_peak_ap_orca.py \
             benchmark/run_frozen_forecast_vs_peak_orca.py
       - name: Run protocol unit tests
         run: |
