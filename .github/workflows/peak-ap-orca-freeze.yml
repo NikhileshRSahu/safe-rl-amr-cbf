@@ -1,0 +1,64 @@
+name: Peak AP-ORCA Validation Freeze
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - ".github/workflows/peak-ap-orca-freeze.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      PROTOCOL_COMMIT: 4d26ed01ff5e49b6db97b53955e0f3d571b72a60
+    steps:
+      - name: Checkout verified Peak AP-ORCA selection protocol
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PROTOCOL_COMMIT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Validation-select and freeze Peak AP-ORCA
+        run: |
+          python -m benchmark.select_peak_ap_orca \
+            --out results/frozen_peak_ap_orca \
+            --max-steps 600
+
+      - name: Verify classical freeze and untouched holdout
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('results/frozen_peak_ap_orca/peak_ap_orca_selection.json').read_text())
+          assert r['status'] == 'selected_and_frozen'
+          assert r['controller'] == 'Peak AP-ORCA+CBF'
+          assert r['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert r['perception_contract'] == 'causal_observable_only_no_hidden_intent_no_future_state'
+          assert r['holdout_seeds_used'] == []
+          assert r['holdout_seed_count_reserved'] == 30
+          print('FROZEN_PEAK_AP_ORCA', r['selected_candidate'])
+          print('ADAPTIVE_CONFIG', json.dumps(r['adaptive_config'], indent=2))
+          print('VALIDATION', json.dumps(r['selected_validation_aggregate'], indent=2))
+          PY
+
+      - name: Upload immutable Peak AP-ORCA selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-peak-ap-orca-selection
+          path: results/frozen_peak_ap_orca/
+          if-no-files-found: error
