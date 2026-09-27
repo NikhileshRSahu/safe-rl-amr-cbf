@@ -18,7 +18,7 @@ jobs:
       PYTHONPATH: .
       SELECTION_RUN_ID: ${{ github.event.workflow_run.id }}
       FORECASTER_SHA256: abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4
-      PROTOCOL_COMMIT: 4a7055dd95fcf28c6047f0033af33d1be2de8afe
+      PROTOCOL_COMMIT: 4d26ed01ff5e49b6db97b53955e0f3d571b72a60
     steps:
       - name: Checkout frozen decisive-evaluation protocol
         uses: actions/checkout@v4
