@@ -1,0 +1,52 @@
+{
+  "status": "frozen",
+  "purpose": "Forecast-ST-SAC+CBF training",
+  "source_commit": "2ad933256d07281a22bc8a69bb25db094c38cef0",
+  "qualification_run_id": 36297558724,
+  "qualification_artifact_id": 10925050882,
+  "artifact_name": "human-forecaster-qualification",
+  "checkpoint_file": "human_forecaster.pt",
+  "checkpoint_sha256": "abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4",
+  "architecture": "gru_human_forecaster_v2_motion_features",
+  "feature_mode": "motion_v2",
+  "training": {
+    "model_seed": 71,
+    "data_seeds": [10100, 10101, 10102, 10103, 10104, 10105, 10106, 10107, 10108, 10109, 10110, 10111, 10112, 10113, 10114, 10115],
+    "history_len": 8,
+    "forecast_steps": 6,
+    "forecast_dt": 0.3000001907348633,
+    "horizon_seconds": 1.8000011444091797,
+    "hidden_dim": 96,
+    "epochs": 35,
+    "learning_rate": 0.001,
+    "mean_loss_weight": 2.0,
+    "hard_example_weight": 2.0,
+    "train_sample_count": 13600
+  },
+  "qualification": {
+    "eval_seeds": [10116, 10117, 10118, 10119],
+    "eval_sample_count": 3400,
+    "passed": true,
+    "learned": {
+      "ade": 0.2206120491027832,
+      "fde": 0.42909972862765083
+    },
+    "constant_velocity": {
+      "ade": 0.2339087426662445,
+      "fde": 0.46283148077645286
+    },
+    "ratios": {
+      "overall_ade": 0.9431543540788732,
+      "overall_fde": 0.927118716963217,
+      "human_hesitation_ade": 0.9387472524151089,
+      "human_hesitation_fde": 0.9265315147513575,
+      "human_reversal_ade": 0.9381592303114489,
+      "human_reversal_fde": 0.9291690152927062,
+      "dense_human_flow_ade": 0.9334560662270253,
+      "dense_human_flow_fde": 0.9226163909406194,
+      "mixed_local_traffic_ade": 0.9283672071540828,
+      "mixed_local_traffic_fde": 0.9210219165941681
+    }
+  },
+  "freeze_policy": "Do not tune predictor weights, features, gates, motion scenarios, or qualification thresholds from downstream RL outcomes. Any predictor change creates a new qualification lineage and requires requalification before RL training."
+}
