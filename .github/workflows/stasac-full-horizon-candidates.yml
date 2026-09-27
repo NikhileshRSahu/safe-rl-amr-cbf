@@ -1,4 +1,4 @@
-name: STASAC Full-Horizon Candidates
+name: Forecast-ST-SAC Full Curriculum Candidates
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   train:
@@ -17,59 +18,138 @@ jobs:
       matrix:
         seed: [71, 172, 273]
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       PYTHONPATH: .
+      FORECASTER_QUALIFICATION_RUN: "36297558724"
+      FORECASTER_SHA256: "abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4"
+      MIN_AGENT_STEPS: "120000"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install "numpy<2.0" scipy cvxpy osqp
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Train candidate
+
+      - name: Download frozen qualified forecaster
+        uses: actions/download-artifact@v4
+        with:
+          name: human-forecaster-qualification
+          path: results/frozen_forecaster
+          run-id: 36297558724
+          github-token: ${{ github.token }}
+
+      - name: Verify frozen predictor identity and qualification lineage
+        run: |
+          echo "${FORECASTER_SHA256}  results/frozen_forecaster/human_forecaster.pt" | sha256sum -c -
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import torch
+
+          manifest = json.loads(Path('benchmark/frozen_human_forecaster_v2.json').read_text())
+          report = json.loads(Path('results/frozen_forecaster/report.json').read_text())
+          flag = Path('results/frozen_forecaster/PASSED').read_text().strip()
+          checkpoint = torch.load('results/frozen_forecaster/human_forecaster.pt', map_location='cpu', weights_only=False)
+
+          expected = 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+          assert flag == '1'
+          assert manifest['status'] == 'frozen'
+          assert manifest['qualification_run_id'] == 36297558724
+          assert manifest['checkpoint_sha256'] == expected
+          assert report['sha256'] == expected
+          assert report['gate']['passed'] is True
+          assert report['gate']['failed_scenarios'] == []
+          assert report['metadata']['architecture'] == 'gru_human_forecaster_v2_motion_features'
+          assert report['metadata']['feature_mode'] == 'motion_v2'
+          assert checkpoint['metadata']['architecture'] == 'gru_human_forecaster_v2_motion_features'
+          assert checkpoint['metadata']['feature_mode'] == 'motion_v2'
+          print('Frozen predictor verified:', expected)
+          PY
+
+      - name: Train Forecast-ST-SAC+CBF candidate through gated curriculum
         run: |
           python -m benchmark.stasac_training_runner \
-            --agent-steps 20000 \
+            --agent-steps ${MIN_AGENT_STEPS} \
             --seed ${{ matrix.seed }} \
-            --out results/stasac_candidate_${{ matrix.seed }} \
+            --out results/forecast_stasac_candidate_${{ matrix.seed }} \
             --max-episode-steps 600 \
             --burn-in 4 \
             --train-len 8 \
-            --batch-size 8
-      - name: Verify candidate contract
+            --batch-size 8 \
+            --gate-interval-episodes 5 \
+            --forecaster-checkpoint results/frozen_forecaster/human_forecaster.pt
+
+      - name: Verify full 0-to-3 curriculum mastery contract
         run: |
           SEED=${{ matrix.seed }} python - <<'PY'
-          import json, os, torch
+          import hashlib
+          import json
+          import os
+          import torch
           from pathlib import Path
-          seed=os.environ['SEED']
-          root=Path(f'results/stasac_candidate_{seed}')
-          summary=json.loads((root/'summary.json').read_text())
-          m=summary['metadata']
-          assert m['agent_steps'] >= 20000, m
+
+          from benchmark.orca_teacher import should_promote_curriculum_stage
+
+          seed = os.environ['SEED']
+          root = Path(f'results/forecast_stasac_candidate_{seed}')
+          summary = json.loads((root/'summary.json').read_text())
+          m = summary['metadata']
+          expected_sha = os.environ['FORECASTER_SHA256']
+          checkpoint_path = Path('results/frozen_forecaster/human_forecaster.pt')
+          actual_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+
+          assert actual_sha == expected_sha
+          assert m['agent_steps'] >= int(os.environ['MIN_AGENT_STEPS']), m
           assert m['updates'] > 0, m
-          assert 0.0 <= m['final_bc_coefficient'] <= 1.0, m
+          assert m['forecast_enabled'] is True, m
+          assert m['forecaster_sha256'] == expected_sha, m
+          assert m['architecture'] == 'forecast_spatiotemporal_risk_attention_sac_cbf_v1', m
           assert m['training_seed_split'] == 'development_gradient_only', m
           assert m['teacher_schedule'] == 'performance_gated', m
           assert m['curriculum_schedule'] == 'safety_success_gated_4_stage', m
           assert m['max_episode_steps'] == 600, m
           assert m['competence_gate_max_steps'] == 600, m
-          assert 0 <= m['final_stage'] <= 3, m
+          assert m['final_stage'] == 3, 'training budget ended before reaching curriculum stage 3'
           assert summary['competence_gates'], 'missing competence gates'
-          ck=torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
-          assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_v1'
+
+          gates = summary['competence_gates']
+          seen = {int(g['stage']) for g in gates}
+          assert {0, 1, 2, 3} <= seen, f'curriculum stages missing: {seen}'
+          for stage in (0, 1, 2):
+              assert any(int(g['stage']) == stage and bool(g['promoted']) for g in gates), f'stage {stage} never passed its promotion gate'
+
+          final_gates = [g for g in gates if int(g['stage']) == 3]
+          assert final_gates, 'stage 3 was entered but never competence-tested'
+          final_policy = final_gates[-1]['policy']
+          final_mastered = should_promote_curriculum_stage(
+              episodes=int(final_policy['episodes']),
+              success_rate=float(final_policy['success_rate']),
+              collision_rate=float(final_policy['collision_rate']),
+          )
+          assert final_mastered, f'final stage competence gate not passed at training end: {final_policy}'
+
+          ck = torch.load(root/'stasac_cbf.pt', map_location='cpu', weights_only=False)
+          assert ck['observation_version'] == 'warehouse_variable_entities_risk_history_forecast_v1'
+          assert ck['forecaster_metadata']['architecture'] == 'gru_human_forecaster_v2_motion_features'
+          assert ck['metadata']['forecaster_sha256'] == expected_sha
           for tensor in ck['actor'].values():
               assert torch.isfinite(tensor).all()
+
           print(json.dumps(m, indent=2))
-          print('training successes', sum(r['success'] for r in summary['episodes']))
-          print('training collisions', sum(r['collision'] for r in summary['episodes']))
-          print('last competence gate', json.dumps(summary['competence_gates'][-1], indent=2))
+          print('FULL_CURRICULUM_MASTERED=1')
+          print('final competence gate', json.dumps(final_gates[-1], indent=2))
           PY
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: stasac-candidate-${{ matrix.seed }}
-          path: results/stasac_candidate_${{ matrix.seed }}/
-          if-no-files-found: error
+          name: forecast-stasac-candidate-${{ matrix.seed }}
+          path: results/forecast_stasac_candidate_${{ matrix.seed }}/
+          if-no-files-found: warn
