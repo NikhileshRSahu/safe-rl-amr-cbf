@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from benchmark.adaptive_predictive_orca import AdaptiveORCAConfig
 from benchmark.best_vs_best_evaluation import compare_best_vs_best
 from benchmark.best_vs_best_protocol import (
     local_human_navigation_catalog,
@@ -29,8 +30,30 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _load_frozen_orca_selection(path: Path) -> tuple[dict, AdaptiveORCAConfig]:
+    selection = json.loads(path.read_text())
+    if selection.get("status") != "selected_and_frozen":
+        raise RuntimeError("Peak AP-ORCA selection artifact is not frozen")
+    if selection.get("controller") != "Peak AP-ORCA+CBF":
+        raise RuntimeError("unexpected classical controller selection")
+    if selection.get("selection_protocol") != "validation_only_safety_first_lexicographic_v1":
+        raise RuntimeError("unexpected Peak AP-ORCA selection protocol")
+    if selection.get("perception_contract") != "causal_observable_only_no_hidden_intent_no_future_state":
+        raise RuntimeError("Peak AP-ORCA perception contract is not the frozen causal contract")
+    if list(selection.get("holdout_seeds_used", [])):
+        raise RuntimeError("Peak AP-ORCA final holdout was already used before decisive evaluation")
+    expected_base = peak_orca_config().__dict__
+    if selection.get("base_peak_orca_config") != expected_base:
+        raise RuntimeError("Peak AP-ORCA base configuration does not match frozen Peak ORCA")
+    raw = dict(selection.get("adaptive_config", {}))
+    if not raw:
+        raise RuntimeError("missing frozen Peak AP-ORCA adaptive configuration")
+    return selection, AdaptiveORCAConfig(**raw)
+
+
 def run_final(
     selection_path: Path,
+    orca_selection_path: Path,
     actor_checkpoint: Path,
     forecaster_path: Path,
     out_dir: Path,
@@ -39,11 +62,13 @@ def run_final(
 ) -> dict:
     selection = json.loads(selection_path.read_text())
     if selection.get("status") != "selected_and_frozen":
-        raise RuntimeError("selection artifact is not a frozen selected candidate")
+        raise RuntimeError("Forecast-ST-SAC selection artifact is not a frozen selected candidate")
     if selection.get("selection_protocol") != "validation_only_safety_first_lexicographic_v1":
-        raise RuntimeError("unexpected candidate-selection protocol")
+        raise RuntimeError("unexpected Forecast-ST-SAC candidate-selection protocol")
     if list(selection.get("holdout_seeds_used", [])):
-        raise RuntimeError("holdout was already marked as used before the decisive run")
+        raise RuntimeError("Forecast-ST-SAC holdout was already used before the decisive run")
+
+    orca_selection, adaptive_orca_config = _load_frozen_orca_selection(orca_selection_path)
 
     actor_sha = sha256_file(actor_checkpoint)
     expected_actor_sha = str(selection["selected_checkpoint_sha256"])
@@ -64,13 +89,21 @@ def run_final(
     if not bool(actor_meta.get("forecast_enabled", False)):
         raise RuntimeError("selected actor is not Forecast-ST-SAC")
     if int(actor_meta.get("final_stage", -1)) != 3:
-        raise RuntimeError("selected actor metadata does not record stage 3")
+        raise RuntimeError("selected actor metadata does not record curriculum stage 3")
 
     development_seeds, validation_seeds, holdout_seeds = split_seed_sets(frozen=True)
     if set(development_seeds) & set(validation_seeds):
         raise RuntimeError("development/validation seed overlap")
     if (set(development_seeds) | set(validation_seeds)) & set(holdout_seeds):
         raise RuntimeError("holdout seed leakage")
+    if list(selection.get("validation_seeds", [])) != list(validation_seeds):
+        raise RuntimeError("Forecast-ST-SAC validation seed set differs from frozen protocol")
+    if list(orca_selection.get("validation_seeds", [])) != list(validation_seeds):
+        raise RuntimeError("Peak AP-ORCA validation seed set differs from frozen protocol")
+    if int(selection.get("holdout_seed_count_reserved", -1)) != len(holdout_seeds):
+        raise RuntimeError("Forecast-ST-SAC reserved holdout count mismatch")
+    if int(orca_selection.get("holdout_seed_count_reserved", -1)) != len(holdout_seeds):
+        raise RuntimeError("Peak AP-ORCA reserved holdout count mismatch")
 
     scenarios = local_human_navigation_catalog()
     forecast_rows = []
@@ -94,6 +127,7 @@ def run_final(
                     spec,
                     seed=int(seed),
                     max_steps=int(max_steps),
+                    adaptive_config=adaptive_orca_config,
                 )
             )
 
@@ -110,7 +144,7 @@ def run_final(
 
     report = {
         "status": "decisive_holdout_complete",
-        "protocol": "peak_ap_orca_cbf_vs_frozen_fully_trained_forecast_st_sac_cbf_v1",
+        "protocol": "peak_ap_orca_cbf_vs_frozen_fully_trained_forecast_st_sac_cbf_v2",
         "verdict": verdict,
         "holdout_consumed_once": True,
         "holdout_seeds": list(holdout_seeds),
@@ -119,12 +153,15 @@ def run_final(
         "scenarios": [s.__dict__ for s in scenarios],
         "max_steps": int(max_steps),
         "pairing_fingerprints": fingerprints,
-        "selected_candidate": selection["selected_candidate"],
+        "selected_forecast_candidate": selection["selected_candidate"],
         "selected_checkpoint_sha256": actor_sha,
         "forecaster_sha256": forecaster_sha,
         "actor_metadata": actor_meta,
         "forecaster_metadata": forecaster_meta,
-        "peak_ap_orca_config": peak_orca_config().__dict__,
+        "selected_peak_ap_orca_candidate": orca_selection["selected_candidate"],
+        "peak_ap_orca_base_config": peak_orca_config().__dict__,
+        "peak_ap_orca_adaptive_config": orca_selection["adaptive_config"],
+        "peak_ap_orca_validation_aggregate": orca_selection["selected_validation_aggregate"],
         "aggregates": {
             "Forecast-ST-SAC+CBF": forecast_agg.__dict__,
             "Peak AP-ORCA+CBF": orca_agg.__dict__,
@@ -150,6 +187,7 @@ def run_final(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selection", required=True)
+    parser.add_argument("--orca-selection", required=True)
     parser.add_argument("--actor", required=True)
     parser.add_argument("--forecaster", required=True)
     parser.add_argument("--out", required=True)
@@ -157,6 +195,7 @@ def main() -> None:
     args = parser.parse_args()
     report = run_final(
         Path(args.selection),
+        Path(args.orca_selection),
         Path(args.actor),
         Path(args.forecaster),
         Path(args.out),
@@ -164,6 +203,7 @@ def main() -> None:
     )
     print(json.dumps({
         "verdict": report["verdict"],
+        "selected_peak_ap_orca_candidate": report["selected_peak_ap_orca_candidate"],
         "aggregates": report["aggregates"],
         "forecast_superiority_test": report["forecast_superiority_test"],
         "orca_superiority_test": report["orca_superiority_test"],
