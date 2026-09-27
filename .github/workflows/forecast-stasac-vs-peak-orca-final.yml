@@ -1,0 +1,103 @@
+name: Forecast-ST-SAC vs Peak AP-ORCA Final Holdout
+
+on:
+  workflow_run:
+    workflows: ["Forecast-ST-SAC Validation Selection"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  final:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      SELECTION_RUN_ID: ${{ github.event.workflow_run.id }}
+      FORECASTER_SHA256: abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4
+      PROTOCOL_COMMIT: f02cda4109978ea079876aa6bd42983453517758
+    steps:
+      - name: Checkout frozen decisive-evaluation protocol
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PROTOCOL_COMMIT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download frozen validation-selected Forecast-ST-SAC
+        uses: actions/download-artifact@v4
+        with:
+          name: frozen-forecast-stasac-selection
+          path: results/frozen_selection
+          run-id: ${{ env.SELECTION_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Download exact frozen predictor
+        uses: actions/download-artifact@v4
+        with:
+          name: human-forecaster-qualification
+          path: results/frozen_forecaster
+          run-id: 36297558724
+          github-token: ${{ github.token }}
+
+      - name: Preflight immutable lineage and untouched holdout
+        run: |
+          echo "${FORECASTER_SHA256}  results/frozen_forecaster/human_forecaster.pt" | sha256sum -c -
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          selection=json.loads(Path('results/frozen_selection/selection.json').read_text())
+          actor=Path('results/frozen_selection/selected_forecast_stasac.pt')
+          actor_sha=hashlib.sha256(actor.read_bytes()).hexdigest()
+          assert selection['status'] == 'selected_and_frozen'
+          assert selection['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert selection['holdout_seeds_used'] == []
+          assert selection['holdout_seed_count_reserved'] == 30
+          assert selection['selected_checkpoint_sha256'] == actor_sha
+          assert selection['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+          print('Frozen actor:', actor_sha)
+          print('Frozen forecaster:', selection['forecaster_sha256'])
+          PY
+
+      - name: Run decisive paired holdout exactly once for this frozen selection
+        run: |
+          python -m benchmark.run_frozen_forecast_vs_peak_orca \
+            --selection results/frozen_selection/selection.json \
+            --actor results/frozen_selection/selected_forecast_stasac.pt \
+            --forecaster results/frozen_forecaster/human_forecaster.pt \
+            --out results/final_forecast_vs_peak_orca \
+            --max-steps 600
+
+      - name: Print thesis-safe verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('results/final_forecast_vs_peak_orca/final_report.json').read_text())
+          assert r['holdout_consumed_once'] is True
+          assert len(r['holdout_seeds']) == 30
+          print('VERDICT:', r['verdict'])
+          print('Forecast-ST-SAC+CBF:', json.dumps(r['aggregates']['Forecast-ST-SAC+CBF'], indent=2))
+          print('Peak AP-ORCA+CBF:', json.dumps(r['aggregates']['Peak AP-ORCA+CBF'], indent=2))
+          print('Forecast superiority test:', json.dumps(r['forecast_superiority_test'], indent=2))
+          print('ORCA superiority test:', json.dumps(r['orca_superiority_test'], indent=2))
+          PY
+
+      - name: Upload decisive frozen holdout report
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-forecast-stasac-vs-peak-ap-orca
+          path: results/final_forecast_vs_peak_orca/
+          if-no-files-found: error
