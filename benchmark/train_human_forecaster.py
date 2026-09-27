@@ -11,6 +11,9 @@ from benchmark.human_forecast_dataset import ForecastSample
 from benchmark.human_forecaster import GRUHumanForecaster
 
 
+FORECASTER_ARCHITECTURE = "gru_human_forecaster_v2_motion_features"
+
+
 def _stack(samples: list[ForecastSample], device="cpu"):
     history = torch.as_tensor(np.stack([s.history for s in samples]), dtype=torch.float32, device=device)
     history_mask = torch.as_tensor(np.stack([s.history_mask for s in samples]), dtype=torch.bool, device=device)
@@ -130,7 +133,13 @@ def train_forecaster(
     np.random.seed(int(seed))
     steps = int(samples[0].future_xy.shape[0])
     horizon_seconds = float(steps * forecast_dt)
-    model = GRUHumanForecaster(history_dim=5, hidden_dim=hidden_dim, steps=steps, horizon_seconds=horizon_seconds)
+    model = GRUHumanForecaster(
+        history_dim=5,
+        hidden_dim=hidden_dim,
+        steps=steps,
+        horizon_seconds=horizon_seconds,
+        feature_mode="motion_v2",
+    )
     opt = torch.optim.Adam(model.parameters(), lr=float(lr))
     history, history_mask, future, future_mask = _stack(samples)
     sample_weights = constant_velocity_difficulty_weights(
@@ -159,7 +168,8 @@ def train_forecaster(
         losses.append(float(loss.detach()))
         last_parts = parts
     meta = {
-        "architecture": "gru_human_forecaster_v1",
+        "architecture": FORECASTER_ARCHITECTURE,
+        "feature_mode": "motion_v2",
         "training_seeds": seeds,
         "history_len": int(history.shape[1]),
         "forecast_steps": steps,
@@ -187,7 +197,14 @@ def load_forecaster_checkpoint(path):
     payload = torch.load(path, map_location="cpu", weights_only=False)
     meta = dict(payload["metadata"])
     horizon_seconds = float(meta.get("horizon_seconds", float(meta.get("forecast_steps", 8)) * float(meta.get("forecast_dt", 0.25))))
-    model = GRUHumanForecaster(hidden_dim=int(meta["hidden_dim"]), steps=int(meta["forecast_steps"]), horizon_seconds=horizon_seconds)
+    architecture = str(meta.get("architecture", "gru_human_forecaster_v1"))
+    feature_mode = str(meta.get("feature_mode", "motion_v2" if architecture == FORECASTER_ARCHITECTURE else "legacy_v1"))
+    model = GRUHumanForecaster(
+        hidden_dim=int(meta["hidden_dim"]),
+        steps=int(meta["forecast_steps"]),
+        horizon_seconds=horizon_seconds,
+        feature_mode=feature_mode,
+    )
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return model, meta
