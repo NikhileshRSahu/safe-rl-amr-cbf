@@ -14,6 +14,56 @@ class TorchForecastOutput:
     mask: torch.Tensor
 
 
+def _last_valid_indices(history_mask: torch.Tensor) -> torch.Tensor:
+    """Return the final valid history index for every track."""
+    positions = torch.arange(history_mask.shape[1], device=history_mask.device).unsqueeze(0).expand_as(history_mask)
+    invalid = torch.full_like(positions, -1)
+    return torch.where(history_mask, positions, invalid).max(dim=1).values.clamp(min=0)
+
+
+def causal_motion_features(history: torch.Tensor, history_mask: torch.Tensor) -> torch.Tensor:
+    """Build translation/time-invariant causal motion features.
+
+    The stored history layout is ``[x, y, vx, vy, timestamp]``.  Absolute
+    warehouse position and absolute simulator time are nuisance variables for a
+    shared pedestrian-motion predictor: hesitation/restart/reversal are local
+    motion patterns.  We therefore feed the GRU
+
+      ``[dx_to_latest, dy_to_latest, vx, vy, delta_speed]``.
+
+    ``delta_speed`` is computed only from already-observed adjacent history
+    samples.  It exposes a causal deceleration/restart cue without using a
+    scenario label, future target, evaluation seed, or any other holdout
+    information.  The dimensionality remains five so legacy checkpoint tensor
+    shapes remain well-defined; checkpoint metadata decides whether old models
+    use the original raw representation when loaded.
+    """
+    if history.ndim != 3 or history.shape[-1] < 5:
+        raise ValueError("history must have shape [N,T,D>=5]")
+    if history_mask.shape != history.shape[:2]:
+        raise ValueError("history_mask shape mismatch")
+    n, t, _ = history.shape
+    if n == 0:
+        return history.new_zeros((0, t, 5))
+
+    last_idx = _last_valid_indices(history_mask)
+    batch_idx = torch.arange(n, device=history.device)
+    last_xy = history[batch_idx, last_idx, :2]
+
+    xy = history[..., :2]
+    vel = history[..., 2:4]
+    rel_xy = xy - last_xy[:, None, :]
+    speed = torch.linalg.norm(vel, dim=-1)
+    delta_speed = torch.zeros_like(speed)
+    if t > 1:
+        valid_pair = history_mask[:, 1:] & history_mask[:, :-1]
+        ds = speed[:, 1:] - speed[:, :-1]
+        delta_speed[:, 1:] = torch.where(valid_pair, ds, torch.zeros_like(ds))
+
+    features = torch.cat((rel_xy, vel, delta_speed.unsqueeze(-1)), dim=-1)
+    return features * history_mask.unsqueeze(-1).to(history.dtype)
+
+
 def motion_nonlinearity_gate(
     history: torch.Tensor,
     history_mask: torch.Tensor,
@@ -50,12 +100,25 @@ def motion_nonlinearity_gate(
 class GRUHumanForecaster(nn.Module):
     """Shared per-track causal GRU residual forecaster over constant velocity."""
 
-    def __init__(self, history_dim: int = 5, hidden_dim: int = 64, steps: int = 8, horizon_seconds: float = 2.0):
+    def __init__(
+        self,
+        history_dim: int = 5,
+        hidden_dim: int = 64,
+        steps: int = 8,
+        horizon_seconds: float = 2.0,
+        *,
+        feature_mode: str = "motion_v2",
+    ):
         super().__init__()
         self.history_dim = int(history_dim)
         self.hidden_dim = int(hidden_dim)
         self.steps = int(steps)
         self.horizon_seconds = float(horizon_seconds)
+        self.feature_mode = str(feature_mode)
+        if self.history_dim != 5:
+            raise ValueError("GRUHumanForecaster currently expects [x,y,vx,vy,t] histories")
+        if self.feature_mode not in {"motion_v2", "legacy_v1"}:
+            raise ValueError("feature_mode must be 'motion_v2' or 'legacy_v1'")
         self.encoder = nn.GRU(self.history_dim, self.hidden_dim, batch_first=True)
         self.head = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
@@ -65,6 +128,11 @@ class GRUHumanForecaster(nn.Module):
         # Start exactly at the analytical constant-velocity baseline.
         nn.init.zeros_(self.head[-1].weight)
         nn.init.zeros_(self.head[-1].bias)
+
+    def _encoder_input(self, history: torch.Tensor, history_mask: torch.Tensor) -> torch.Tensor:
+        if self.feature_mode == "legacy_v1":
+            return history * history_mask.unsqueeze(-1).to(history.dtype)
+        return causal_motion_features(history, history_mask)
 
     def forward(self, history: torch.Tensor, history_mask: torch.Tensor) -> TorchForecastOutput:
         if history.ndim != 3 or history.shape[-1] != self.history_dim:
@@ -76,15 +144,13 @@ class GRUHumanForecaster(nn.Module):
             z = history.new_zeros((0, self.steps, 2))
             return TorchForecastOutput(z, z.clone(), history_mask.new_zeros((0, self.steps)))
 
-        masked = history * history_mask.unsqueeze(-1).to(history.dtype)
-        _, h = self.encoder(masked)
+        encoder_input = self._encoder_input(history, history_mask)
+        _, h = self.encoder(encoder_input)
         raw = self.head(h[-1]).reshape(n, self.steps, 4)
         residual = raw[..., :2]
         sigma = torch.clamp(F.softplus(raw[..., 2:]) + 1e-4, 1e-4, 3.0)
 
-        positions = torch.arange(history.shape[1], device=history.device).unsqueeze(0).expand_as(history_mask)
-        invalid = torch.full_like(positions, -1)
-        last_idx = torch.where(history_mask, positions, invalid).max(dim=1).values.clamp(min=0)
+        last_idx = _last_valid_indices(history_mask)
         batch_idx = torch.arange(n, device=history.device)
         last_xy = history[batch_idx, last_idx, :2]
         last_vel = history[batch_idx, last_idx, 2:4]
