@@ -6,7 +6,7 @@ from statistics import mean
 import numpy as np
 import torch
 
-from benchmark.adaptive_predictive_orca import AStarAdaptivePredictiveORCADD
+from benchmark.adaptive_predictive_orca import AStarAdaptivePredictiveORCADD, AdaptiveORCAConfig
 from benchmark.beast_classical import BeastORCAConfig
 from benchmark.best_vs_best_evaluation import ControllerAggregate
 from benchmark.best_vs_best_protocol import ScenarioSpec, make_paired_worlds
@@ -23,7 +23,6 @@ def _interaction_metrics(action_history):
     if not action_history:
         return {"stop_yield_fraction":0.0,"angular_oscillation":0.0,"commitment_reversals":0.0}
     a=np.asarray(action_history,dtype=np.float32)
-    # normalized forward command -1 maps to zero physical speed
     speed01=(a[...,0]+1.0)*0.5
     stop=float(np.mean(speed01 < 0.12))
     omega=a[...,1]
@@ -79,8 +78,14 @@ def run_forecast_stasac_episode(actor, forecaster, spec:ScenarioSpec, *, seed:in
     return _run_actor_episode(actor,spec,seed=seed,max_steps=max_steps,use_forecast=True,forecaster=forecaster)
 
 
-def run_ap_orca_episode(spec:ScenarioSpec, *, seed:int, max_steps:int=600):
-    _,world=make_paired_worlds(spec,int(seed)); cfg=peak_orca_config(); controllers=[AStarAdaptivePredictiveORCADD(world,i,cfg) for i in range(world.n)]; steps=0; action_history=[]
+def run_ap_orca_episode(
+    spec: ScenarioSpec,
+    *,
+    seed: int,
+    max_steps: int = 600,
+    adaptive_config: AdaptiveORCAConfig | None = None,
+):
+    _,world=make_paired_worlds(spec,int(seed)); cfg=peak_orca_config(); controllers=[AStarAdaptivePredictiveORCADD(world,i,cfg,adaptive_config) for i in range(world.n)]; steps=0; action_history=[]
     for _ in range(int(max_steps)):
         actions=np.asarray([c.action(world) for c in controllers],dtype=np.float32); action_history.append(actions.copy()); _,_,done=world.step(actions,use_cbf=True); steps+=1
         if np.all(done): break
