@@ -33,7 +33,8 @@ def test_train_forecaster_is_finite_and_roundtrips(tmp_path):
     digest = save_forecaster_checkpoint(path, model, meta)
     assert len(digest) == 64
     loaded, loaded_meta = load_forecaster_checkpoint(path)
-    assert loaded_meta["architecture"] == "gru_human_forecaster_v1"
+    assert loaded_meta["architecture"] == "gru_human_forecaster_v2_motion_features"
+    assert loaded_meta["feature_mode"] == "motion_v2"
     report = evaluate_forecaster(loaded, _samples())
     assert np.isfinite(report["ade"])
     assert np.isfinite(report["fde"])
