@@ -1,6 +1,6 @@
 import torch
 
-from benchmark.human_forecaster import GRUHumanForecaster, motion_nonlinearity_gate
+from benchmark.human_forecaster import GRUHumanForecaster, causal_motion_features, motion_nonlinearity_gate
 from benchmark.human_motion_profiles import hesitation_speed_factor
 
 
@@ -48,6 +48,26 @@ def test_fresh_residual_forecaster_starts_at_constant_velocity_baseline():
         for k in range(3)
     ])
     assert torch.allclose(out.mean_xy[0], expected, atol=1e-6)
+
+
+def test_causal_motion_features_are_translation_and_clock_invariant():
+    history = torch.zeros(1, 6, 5)
+    mask = torch.ones(1, 6, dtype=torch.bool)
+    history[0, :, 0] = torch.tensor([1.00, 1.05, 1.09, 1.12, 1.14, 1.15])
+    history[0, :, 1] = -0.25
+    history[0, :, 2] = torch.tensor([0.50, 0.45, 0.40, 0.30, 0.20, 0.10])
+    history[0, :, 4] = torch.arange(6, dtype=torch.float32) * 0.1
+    a = causal_motion_features(history, mask)
+
+    shifted = history.clone()
+    shifted[..., 0] += 17.0
+    shifted[..., 1] -= 9.0
+    shifted[..., 4] += 123.0
+    b = causal_motion_features(shifted, mask)
+    assert torch.allclose(a, b, atol=1e-6)
+    # The fifth feature is causal signed speed change and therefore exposes
+    # hesitation deceleration without future labels or scenario identity.
+    assert a[0, -1, 4] < 0.0
 
 
 def test_motion_nonlinearity_gate_suppresses_residuals_for_steady_motion_and_opens_after_stop():
