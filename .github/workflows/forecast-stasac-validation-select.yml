@@ -1,0 +1,108 @@
+name: Forecast-ST-SAC Validation Selection
+
+on:
+  workflow_run:
+    workflows: ["Forecast-ST-SAC Full Curriculum Candidates"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      training_run_id:
+        description: "Completed full-curriculum training run ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  select:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.workflow_run.head_branch == 'research/beast-baselines-v1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      TRAINING_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.training_run_id }}
+      FORECASTER_SHA256: abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4
+      PROTOCOL_COMMIT: f02cda4109978ea079876aa6bd42983453517758
+    steps:
+      - name: Checkout frozen selection protocol
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PROTOCOL_COMMIT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Download all full-training candidate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: forecast-stasac-candidate-*
+          path: results/training_artifacts
+          merge-multiple: false
+          run-id: ${{ env.TRAINING_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Download exact frozen predictor
+        uses: actions/download-artifact@v4
+        with:
+          name: human-forecaster-qualification
+          path: results/frozen_forecaster
+          run-id: 36297558724
+          github-token: ${{ github.token }}
+
+      - name: Verify frozen predictor before validation
+        run: |
+          echo "${FORECASTER_SHA256}  results/frozen_forecaster/human_forecaster.pt" | sha256sum -c -
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('results/frozen_forecaster/report.json').read_text())
+          assert report['gate']['passed'] is True
+          assert report['gate']['failed_scenarios'] == []
+          assert report['sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+          PY
+
+      - name: Select only among fully mastered candidates on frozen validation seeds
+        run: |
+          python -m benchmark.select_fully_trained_forecast_stasac \
+            --candidate-root results/training_artifacts \
+            --forecaster results/frozen_forecaster/human_forecaster.pt \
+            --out results/selected_forecast_stasac \
+            --expected-forecaster-sha "${FORECASTER_SHA256}" \
+            --min-agent-steps 120000 \
+            --max-steps 600
+
+      - name: Verify holdout remains untouched
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/selected_forecast_stasac/selection.json')
+          r=json.loads(p.read_text())
+          assert r['status'] == 'selected_and_frozen'
+          assert r['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert r['holdout_seeds_used'] == []
+          assert r['holdout_seed_count_reserved'] == 30
+          assert r['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+          print('SELECTED', r['selected_candidate'])
+          print('CHECKPOINT_SHA256', r['selected_checkpoint_sha256'])
+          print('VALIDATION', json.dumps(r['selected_validation_aggregate'], indent=2))
+          PY
+
+      - name: Upload frozen selected Forecast-ST-SAC checkpoint
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frozen-forecast-stasac-selection
+          path: results/selected_forecast_stasac/
+          if-no-files-found: warn
