@@ -1,5 +1,6 @@
 name: Forecast-ST-SAC Full Curriculum Candidates
 
+# Launch lineage: frozen forecaster v2 qualification run 36297558724.
 on:
   push:
     branches: [research/beast-baselines-v1]
