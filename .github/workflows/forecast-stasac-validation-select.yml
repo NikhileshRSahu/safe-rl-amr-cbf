@@ -26,7 +26,7 @@ jobs:
       PYTHONPATH: .
       TRAINING_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.training_run_id }}
       FORECASTER_SHA256: abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4
-      PROTOCOL_COMMIT: f02cda4109978ea079876aa6bd42983453517758
+      PROTOCOL_COMMIT: 4a7055dd95fcf28c6047f0033af33d1be2de8afe
     steps:
       - name: Checkout frozen selection protocol
         uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
           assert report['sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
           PY
 
-      - name: Select only among fully mastered candidates on frozen validation seeds
+      - name: Select only among fully mastered Forecast-ST-SAC candidates on frozen validation seeds
         run: |
           python -m benchmark.select_fully_trained_forecast_stasac \
             --candidate-root results/training_artifacts \
@@ -82,24 +82,43 @@ jobs:
             --min-agent-steps 120000 \
             --max-steps 600
 
-      - name: Verify holdout remains untouched
+      - name: Validation-tune and freeze current Peak AP-ORCA adaptive layer
+        run: |
+          python -m benchmark.select_peak_ap_orca \
+            --out results/selected_forecast_stasac \
+            --max-steps 600
+
+      - name: Verify both sides are frozen and holdout remains untouched
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          p=Path('results/selected_forecast_stasac/selection.json')
-          r=json.loads(p.read_text())
-          assert r['status'] == 'selected_and_frozen'
-          assert r['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
-          assert r['holdout_seeds_used'] == []
-          assert r['holdout_seed_count_reserved'] == 30
-          assert r['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
-          print('SELECTED', r['selected_candidate'])
-          print('CHECKPOINT_SHA256', r['selected_checkpoint_sha256'])
-          print('VALIDATION', json.dumps(r['selected_validation_aggregate'], indent=2))
+
+          rl=json.loads(Path('results/selected_forecast_stasac/selection.json').read_text())
+          orca=json.loads(Path('results/selected_forecast_stasac/peak_ap_orca_selection.json').read_text())
+
+          assert rl['status'] == 'selected_and_frozen'
+          assert rl['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert rl['holdout_seeds_used'] == []
+          assert rl['holdout_seed_count_reserved'] == 30
+          assert rl['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+
+          assert orca['status'] == 'selected_and_frozen'
+          assert orca['controller'] == 'Peak AP-ORCA+CBF'
+          assert orca['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert orca['perception_contract'] == 'causal_observable_only_no_hidden_intent_no_future_state'
+          assert orca['holdout_seeds_used'] == []
+          assert orca['holdout_seed_count_reserved'] == 30
+
+          print('FORECAST_SELECTED', rl['selected_candidate'])
+          print('FORECAST_CHECKPOINT_SHA256', rl['selected_checkpoint_sha256'])
+          print('FORECAST_VALIDATION', json.dumps(rl['selected_validation_aggregate'], indent=2))
+          print('PEAK_AP_ORCA_SELECTED', orca['selected_candidate'])
+          print('PEAK_AP_ORCA_CONFIG', json.dumps(orca['adaptive_config'], indent=2))
+          print('PEAK_AP_ORCA_VALIDATION', json.dumps(orca['selected_validation_aggregate'], indent=2))
           PY
 
-      - name: Upload frozen selected Forecast-ST-SAC checkpoint
+      - name: Upload frozen best-vs-best selections
         uses: actions/upload-artifact@v4
         if: always()
         with:
