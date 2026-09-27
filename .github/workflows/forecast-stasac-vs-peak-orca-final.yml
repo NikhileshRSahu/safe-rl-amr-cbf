@@ -18,7 +18,7 @@ jobs:
       PYTHONPATH: .
       SELECTION_RUN_ID: ${{ github.event.workflow_run.id }}
       FORECASTER_SHA256: abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4
-      PROTOCOL_COMMIT: f02cda4109978ea079876aa6bd42983453517758
+      PROTOCOL_COMMIT: 4a7055dd95fcf28c6047f0033af33d1be2de8afe
     steps:
       - name: Checkout frozen decisive-evaluation protocol
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
           pip install "numpy<2.0" scipy cvxpy osqp
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Download frozen validation-selected Forecast-ST-SAC
+      - name: Download frozen validation-selected best-vs-best artifacts
         uses: actions/download-artifact@v4
         with:
           name: frozen-forecast-stasac-selection
@@ -51,30 +51,43 @@ jobs:
           run-id: 36297558724
           github-token: ${{ github.token }}
 
-      - name: Preflight immutable lineage and untouched holdout
+      - name: Preflight immutable lineage, both frozen controllers, and untouched holdout
         run: |
           echo "${FORECASTER_SHA256}  results/frozen_forecaster/human_forecaster.pt" | sha256sum -c -
           python - <<'PY'
           import hashlib, json
           from pathlib import Path
 
-          selection=json.loads(Path('results/frozen_selection/selection.json').read_text())
+          rl=json.loads(Path('results/frozen_selection/selection.json').read_text())
+          orca=json.loads(Path('results/frozen_selection/peak_ap_orca_selection.json').read_text())
           actor=Path('results/frozen_selection/selected_forecast_stasac.pt')
           actor_sha=hashlib.sha256(actor.read_bytes()).hexdigest()
-          assert selection['status'] == 'selected_and_frozen'
-          assert selection['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
-          assert selection['holdout_seeds_used'] == []
-          assert selection['holdout_seed_count_reserved'] == 30
-          assert selection['selected_checkpoint_sha256'] == actor_sha
-          assert selection['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
-          print('Frozen actor:', actor_sha)
-          print('Frozen forecaster:', selection['forecaster_sha256'])
+
+          assert rl['status'] == 'selected_and_frozen'
+          assert rl['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert rl['holdout_seeds_used'] == []
+          assert rl['holdout_seed_count_reserved'] == 30
+          assert rl['selected_checkpoint_sha256'] == actor_sha
+          assert rl['forecaster_sha256'] == 'abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4'
+
+          assert orca['status'] == 'selected_and_frozen'
+          assert orca['controller'] == 'Peak AP-ORCA+CBF'
+          assert orca['selection_protocol'] == 'validation_only_safety_first_lexicographic_v1'
+          assert orca['perception_contract'] == 'causal_observable_only_no_hidden_intent_no_future_state'
+          assert orca['holdout_seeds_used'] == []
+          assert orca['holdout_seed_count_reserved'] == 30
+
+          print('Frozen Forecast-ST-SAC actor:', actor_sha)
+          print('Frozen forecaster:', rl['forecaster_sha256'])
+          print('Frozen Peak AP-ORCA candidate:', orca['selected_candidate'])
+          print('Frozen Peak AP-ORCA adaptive config:', json.dumps(orca['adaptive_config'], indent=2))
           PY
 
-      - name: Run decisive paired holdout exactly once for this frozen selection
+      - name: Run decisive paired holdout exactly once for both frozen selections
         run: |
           python -m benchmark.run_frozen_forecast_vs_peak_orca \
             --selection results/frozen_selection/selection.json \
+            --orca-selection results/frozen_selection/peak_ap_orca_selection.json \
             --actor results/frozen_selection/selected_forecast_stasac.pt \
             --forecaster results/frozen_forecaster/human_forecaster.pt \
             --out results/final_forecast_vs_peak_orca \
@@ -88,9 +101,11 @@ jobs:
           r=json.loads(Path('results/final_forecast_vs_peak_orca/final_report.json').read_text())
           assert r['holdout_consumed_once'] is True
           assert len(r['holdout_seeds']) == 30
+          assert r['protocol'] == 'peak_ap_orca_cbf_vs_frozen_fully_trained_forecast_st_sac_cbf_v2'
           print('VERDICT:', r['verdict'])
           print('Forecast-ST-SAC+CBF:', json.dumps(r['aggregates']['Forecast-ST-SAC+CBF'], indent=2))
           print('Peak AP-ORCA+CBF:', json.dumps(r['aggregates']['Peak AP-ORCA+CBF'], indent=2))
+          print('Peak AP-ORCA candidate:', r['selected_peak_ap_orca_candidate'])
           print('Forecast superiority test:', json.dumps(r['forecast_superiority_test'], indent=2))
           print('ORCA superiority test:', json.dumps(r['orca_superiority_test'], indent=2))
           PY
