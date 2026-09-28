@@ -140,6 +140,18 @@ def deterministic_action_from_scene(actor: STASACActor, scene: torch.Tensor) -> 
     return torch.tanh(actor.mu(scene))
 
 
+def actor_objective_weights(bc_coeff: float) -> tuple[float, float]:
+    """Couple actor objectives to the teacher handoff.
+
+    While rollouts are fully teacher-driven, the critic only observes teacher
+    actions. Letting the SAC actor optimize Q for unsupported policy actions in
+    that phase creates extrapolation pressure that can overwhelm imitation.
+    Ramp SAC in only as teacher support is withdrawn.
+    """
+    bc_weight = float(np.clip(bc_coeff, 0.0, 1.0))
+    return 1.0 - bc_weight, bc_weight
+
+
 def recurrent_sac_update(batch, actor: STASACActor, q: TwinRecurrentQ, target_q: TwinRecurrentQ, actor_opt, q_opt, *, alpha: float = 0.08, gamma: float = 0.99, tau: float = 0.01, max_grad_norm: float = 5.0, bc_coeff: float = 0.0):
     ego, entities, mask = batch["ego"].float(), batch["entities"].float(), batch["entity_mask"].bool()
     action, reward = batch["action"].float(), batch["reward"].float()
@@ -182,16 +194,18 @@ def recurrent_sac_update(batch, actor: STASACActor, q: TwinRecurrentQ, target_q:
                 valid_teacher = train_mask[:, t] & teacher_mask[:, t]
                 if valid_teacher.any():
                     deterministic_action = deterministic_action_from_scene(actor, hidden)
-                    bc_terms.append(behavior_cloning_loss(deterministic_action[valid_teacher], teacher_action[:, t][valid_teacher], coefficient=float(bc_coeff)))
+                    bc_terms.append(behavior_cloning_loss(deterministic_action[valid_teacher], teacher_action[:, t][valid_teacher], coefficient=1.0))
         if t < l-1: hidden = reset_hidden(hidden, done[:, t,0].bool())
     sac_actor_loss = torch.cat(actor_terms, 0).mean()
-    bc_loss = torch.stack(bc_terms).mean() if bc_terms else sac_actor_loss*0.0
-    actor_loss = sac_actor_loss + bc_loss
+    raw_bc_loss = torch.stack(bc_terms).mean() if bc_terms else sac_actor_loss*0.0
+    sac_weight, bc_weight = actor_objective_weights(bc_coeff)
+    bc_loss = raw_bc_loss * bc_weight
+    actor_loss = sac_actor_loss * sac_weight + bc_loss
     actor_opt.zero_grad(set_to_none=True); actor_loss.backward(); torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm); actor_opt.step()
     for p in q.parameters(): p.requires_grad_(True)
     _polyak(q, target_q, float(tau))
     mean_logp = torch.cat(logp_values,0).mean()
-    return {"q_loss":float(q_loss.detach()), "actor_loss":float(actor_loss.detach()), "sac_actor_loss":float(sac_actor_loss.detach()), "bc_loss":float(bc_loss.detach()), "mean_logp":float(mean_logp.detach())}
+    return {"q_loss":float(q_loss.detach()), "actor_loss":float(actor_loss.detach()), "sac_actor_loss":float(sac_actor_loss.detach()), "bc_loss":float(bc_loss.detach()), "sac_actor_weight":float(sac_weight), "bc_actor_weight":float(bc_weight), "mean_logp":float(mean_logp.detach())}
 
 
 def save_stasac_checkpoint(path, actor: STASACActor, q: TwinRecurrentQ, metadata=None, *, observation_version: str | None = None, forecaster_metadata: dict | None = None):
