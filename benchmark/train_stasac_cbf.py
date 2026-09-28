@@ -133,6 +133,13 @@ def _polyak(source, target, tau: float):
             tp.mul_(1.0 - tau).add_(tau * p)
 
 
+def deterministic_action_from_scene(actor: STASACActor, scene: torch.Tensor) -> torch.Tensor:
+    """Compute BC action from the scene already produced for this observation."""
+    if scene.ndim != 2 or scene.shape[-1] != actor.hidden_dim:
+        raise ValueError("scene must be [B,H] with actor.hidden_dim features")
+    return torch.tanh(actor.mu(scene))
+
+
 def recurrent_sac_update(batch, actor: STASACActor, q: TwinRecurrentQ, target_q: TwinRecurrentQ, actor_opt, q_opt, *, alpha: float = 0.08, gamma: float = 0.99, tau: float = 0.01, max_grad_norm: float = 5.0, bc_coeff: float = 0.0):
     ego, entities, mask = batch["ego"].float(), batch["entities"].float(), batch["entity_mask"].bool()
     action, reward = batch["action"].float(), batch["reward"].float()
@@ -174,7 +181,7 @@ def recurrent_sac_update(batch, actor: STASACActor, q: TwinRecurrentQ, target_q:
             if teacher_action is not None and float(bc_coeff)>0.0:
                 valid_teacher = train_mask[:, t] & teacher_mask[:, t]
                 if valid_teacher.any():
-                    deterministic_action, _, _, _ = actor.sample(ego[:, t], entities[:, t], mask[:, t], hidden.detach(), deterministic=True)
+                    deterministic_action = deterministic_action_from_scene(actor, hidden)
                     bc_terms.append(behavior_cloning_loss(deterministic_action[valid_teacher], teacher_action[:, t][valid_teacher], coefficient=float(bc_coeff)))
         if t < l-1: hidden = reset_hidden(hidden, done[:, t,0].bool())
     sac_actor_loss = torch.cat(actor_terms, 0).mean()
