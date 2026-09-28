@@ -29,6 +29,12 @@ class WarehouseScenarioWorld(SweepHumanWorld):
         randomness_level: str = "baseline",
     ):
         self.scenario_name = str(scenario_name)
+        self._scenario_seed = int(seed)
+        event_rng = np.random.default_rng(self._scenario_seed + 91573)
+        self._event_tick = int(event_rng.integers(28, 41))
+        self._event_duration = int(event_rng.integers(10, 17))
+        self._cut_sign = -1.0 if int(event_rng.integers(0, 2)) == 0 else 1.0
+        self._cut_angle = float(event_rng.uniform(np.deg2rad(58.0), np.deg2rad(78.0)))
         super().__init__(
             n_agents,
             n_people,
@@ -133,7 +139,15 @@ class WarehouseScenarioWorld(SweepHumanWorld):
 
     def _configure_scenario(self):
         name = self.scenario_name
-        if name in {"cross_intersection", "human_crossing", "dense_human_flow", "mixed_local_traffic"}:
+        if name in {
+            "cross_intersection",
+            "human_crossing",
+            "dense_human_flow",
+            "mixed_local_traffic",
+            "surprise_stop_go",
+            "lateral_cut_in",
+            "compound_nonreciprocal",
+        }:
             self._configure_cross_intersection()
         elif name in {"shelf_corner", "blind_shelf_corner"}:
             self._configure_shelf_corner()
@@ -145,6 +159,30 @@ class WarehouseScenarioWorld(SweepHumanWorld):
             self._configure_forklift_like_crossing()
         elif name == "mixed_behavior":
             self._configure_mixed()
+
+    @staticmethod
+    def _ramped_stop_go_velocity(tick: int, start: int, duration: int, speed: float) -> np.ndarray:
+        """Finite-acceleration stop/restart profile with an unseen event time."""
+        decel_ticks = 5
+        accel_ticks = 6
+        if tick < start - decel_ticks:
+            factor = 1.0
+        elif tick < start:
+            factor = max(0.0, (start - tick) / decel_ticks)
+        elif tick < start + duration:
+            factor = 0.0
+        elif tick < start + duration + accel_ticks:
+            factor = min(1.0, (tick - (start + duration) + 1) / accel_ticks)
+        else:
+            factor = 1.0
+        return np.array([speed * factor, 0.0], dtype=np.float32)
+
+    def _lateral_cut_velocity(self, tick: int, start: int, speed: float, *, base_angle: float = 0.0) -> np.ndarray:
+        """Seed-varying bounded cut-in with a finite heading-rate cue."""
+        turn_ticks = 8
+        fraction = float(np.clip((tick - start + 1) / turn_ticks, 0.0, 1.0))
+        angle = base_angle + self._cut_sign * self._cut_angle * fraction
+        return np.array([np.cos(angle) * speed, np.sin(angle) * speed], dtype=np.float32)
 
     def _choose_human_velocities(self):
         super()._choose_human_velocities()
@@ -166,6 +204,34 @@ class WarehouseScenarioWorld(SweepHumanWorld):
                 speed = float(np.linalg.norm(self.hv[target_idx]))
                 if speed > 1e-6:
                     self.hv[target_idx] = -self.hv[target_idx] / speed * min(speed, self.human_max_speed)
+        elif self.scenario_name == "surprise_stop_go":
+            speed = min(0.48 * self.speed_scale, self.human_max_speed)
+            self.hv[0] = self._ramped_stop_go_velocity(
+                tick, self._event_tick, self._event_duration, speed
+            )
+        elif self.scenario_name == "lateral_cut_in":
+            speed = min(0.48 * self.speed_scale, self.human_max_speed)
+            if tick < self._event_tick:
+                self.hv[0] = np.array([speed, 0.0], dtype=np.float32)
+            else:
+                self.hv[0] = self._lateral_cut_velocity(tick, self._event_tick, speed)
+        elif self.scenario_name == "compound_nonreciprocal":
+            speed0 = min(0.48 * self.speed_scale, self.human_max_speed)
+            self.hv[0] = self._ramped_stop_go_velocity(
+                tick, self._event_tick, self._event_duration, speed0
+            )
+            if self.nppl > 1:
+                speed1 = min(0.46 * self.speed_scale, self.human_max_speed)
+                if tick < self._event_tick + 5:
+                    self.hv[1] = np.array([-speed1, 0.0], dtype=np.float32)
+                else:
+                    self.hv[1] = self._lateral_cut_velocity(
+                        tick, self._event_tick + 5, speed1, base_angle=np.pi
+                    )
+            if self.nppl > 2 and self._event_tick + 14 <= tick < self._event_tick + 27:
+                speed2 = float(np.linalg.norm(self.hv[2]))
+                if speed2 > 1e-6:
+                    self.hv[2] = -self.hv[2] / speed2 * min(speed2, self.human_max_speed)
 
 
 def make_scenario_world(spec, seed: int):
