@@ -34,20 +34,10 @@ class SequenceReplay:
         episode = []
         for step in steps:
             copied = dict(step)
-            for key in (
-                "ego",
-                "entities",
-                "entity_mask",
-                "action",
-                "next_ego",
-                "next_entities",
-                "next_entity_mask",
-            ):
+            for key in ("ego", "entities", "entity_mask", "action", "next_ego", "next_entities", "next_entity_mask"):
                 copied[key] = np.asarray(step[key]).copy()
             if "teacher_action" in step and step["teacher_action"] is not None:
-                copied["teacher_action"] = np.asarray(
-                    step["teacher_action"], dtype=np.float32
-                ).copy()
+                copied["teacher_action"] = np.asarray(step["teacher_action"], dtype=np.float32).copy()
             copied["reward"] = float(step["reward"])
             copied["done"] = bool(step["done"])
             episode.append(copied)
@@ -77,17 +67,10 @@ class SequenceReplay:
         has_teacher = False
         for window in windows:
             for step in window:
-                if (
-                    int(np.asarray(step["entities"]).shape[-1]) != entity_dim
-                    or int(np.asarray(step["next_entities"]).shape[-1]) != entity_dim
-                ):
+                if int(np.asarray(step["entities"]).shape[-1]) != entity_dim or int(np.asarray(step["next_entities"]).shape[-1]) != entity_dim:
                     raise ValueError("mixed entity feature dimensions in replay batch")
-                max_n = max(
-                    max_n, len(step["entities"]), len(step["next_entities"])
-                )
-                has_teacher = has_teacher or (
-                    "teacher_action" in step and step["teacher_action"] is not None
-                )
+                max_n = max(max_n, len(step["entities"]), len(step["next_entities"]))
+                has_teacher = has_teacher or ("teacher_action" in step and step["teacher_action"] is not None)
         ego = np.zeros((b, l, ego_dim), np.float32)
         next_ego = np.zeros_like(ego)
         entities = np.zeros((b, l, max_n, entity_dim), np.float32)
@@ -111,11 +94,7 @@ class SequenceReplay:
                     next_entities[bi, ti, :nn] = step["next_entities"]
                     next_entity_mask[bi, ti, :nn] = step["next_entity_mask"]
                 action[bi, ti] = step["action"]
-                if (
-                    has_teacher
-                    and "teacher_action" in step
-                    and step["teacher_action"] is not None
-                ):
+                if has_teacher and "teacher_action" in step and step["teacher_action"] is not None:
                     teacher_action[bi, ti] = step["teacher_action"]
                     teacher_mask[bi, ti] = True
                 reward[bi, ti, 0] = step["reward"]
@@ -123,16 +102,10 @@ class SequenceReplay:
         train_mask = np.zeros((b, l), np.bool_)
         train_mask[:, self.burn_in :] = True
         out = {
-            "ego": torch.from_numpy(ego),
-            "entities": torch.from_numpy(entities),
-            "entity_mask": torch.from_numpy(entity_mask),
-            "action": torch.from_numpy(action),
-            "reward": torch.from_numpy(reward),
-            "next_ego": torch.from_numpy(next_ego),
-            "next_entities": torch.from_numpy(next_entities),
-            "next_entity_mask": torch.from_numpy(next_entity_mask),
-            "done": torch.from_numpy(done),
-            "train_mask": torch.from_numpy(train_mask),
+            "ego": torch.from_numpy(ego), "entities": torch.from_numpy(entities), "entity_mask": torch.from_numpy(entity_mask),
+            "action": torch.from_numpy(action), "reward": torch.from_numpy(reward), "next_ego": torch.from_numpy(next_ego),
+            "next_entities": torch.from_numpy(next_entities), "next_entity_mask": torch.from_numpy(next_entity_mask),
+            "done": torch.from_numpy(done), "train_mask": torch.from_numpy(train_mask),
         }
         if has_teacher:
             out["teacher_action"] = torch.from_numpy(teacher_action)
@@ -147,9 +120,7 @@ def _sequence_scenes(actor, ego, entities, mask, done, *, grad: bool):
     context = torch.enable_grad() if grad else torch.no_grad()
     with context:
         for t in range(l):
-            scene, hidden, _ = actor.encoder(
-                ego[:, t], entities[:, t], mask[:, t], hidden
-            )
+            scene, hidden, _ = actor.encoder(ego[:, t], entities[:, t], mask[:, t], hidden)
             scenes.append(scene)
             if t < l - 1:
                 hidden = reset_hidden(hidden, done[:, t, 0].bool())
@@ -162,181 +133,75 @@ def _polyak(source, target, tau: float):
             tp.mul_(1.0 - tau).add_(tau * p)
 
 
-def deterministic_action_from_scene(
-    actor: STASACActor, scene: torch.Tensor
-) -> torch.Tensor:
-    """Return the deterministic actor action for an already-encoded scene.
-
-    The recurrent encoder must advance exactly once per observation. Re-feeding
-    the same observation with the newly advanced hidden state creates a recurrent
-    state that online rollout never sees, so behavior cloning must operate from
-    the scene that was already produced for the current step.
-    """
+def deterministic_action_from_scene(actor: STASACActor, scene: torch.Tensor) -> torch.Tensor:
+    """Compute BC action from the scene already produced for this observation."""
     if scene.ndim != 2 or scene.shape[-1] != actor.hidden_dim:
         raise ValueError("scene must be [B,H] with actor.hidden_dim features")
     return torch.tanh(actor.mu(scene))
 
 
-def recurrent_sac_update(
-    batch,
-    actor: STASACActor,
-    q: TwinRecurrentQ,
-    target_q: TwinRecurrentQ,
-    actor_opt,
-    q_opt,
-    *,
-    alpha: float = 0.08,
-    gamma: float = 0.99,
-    tau: float = 0.01,
-    max_grad_norm: float = 5.0,
-    bc_coeff: float = 0.0,
-):
-    ego, entities, mask = (
-        batch["ego"].float(),
-        batch["entities"].float(),
-        batch["entity_mask"].bool(),
-    )
+def recurrent_sac_update(batch, actor: STASACActor, q: TwinRecurrentQ, target_q: TwinRecurrentQ, actor_opt, q_opt, *, alpha: float = 0.08, gamma: float = 0.99, tau: float = 0.01, max_grad_norm: float = 5.0, bc_coeff: float = 0.0):
+    ego, entities, mask = batch["ego"].float(), batch["entities"].float(), batch["entity_mask"].bool()
     action, reward = batch["action"].float(), batch["reward"].float()
-    next_ego, next_entities, next_mask = (
-        batch["next_ego"].float(),
-        batch["next_entities"].float(),
-        batch["next_entity_mask"].bool(),
-    )
+    next_ego, next_entities, next_mask = batch["next_ego"].float(), batch["next_entities"].float(), batch["next_entity_mask"].bool()
     done, train_mask = batch["done"].float(), batch["train_mask"].bool()
-    teacher_action, teacher_mask = batch.get("teacher_action"), batch.get(
-        "teacher_mask"
-    )
+    teacher_action, teacher_mask = batch.get("teacher_action"), batch.get("teacher_mask")
     if teacher_action is not None:
         teacher_action, teacher_mask = teacher_action.float(), teacher_mask.bool()
     b, l, _ = ego.shape
-    current_scene = _sequence_scenes(
-        actor, ego, entities, mask, done, grad=False
-    )
-    next_scene = _sequence_scenes(
-        actor, next_ego, next_entities, next_mask, done, grad=False
-    )
+    current_scene = _sequence_scenes(actor, ego, entities, mask, done, grad=False)
+    next_scene = _sequence_scenes(actor, next_ego, next_entities, next_mask, done, grad=False)
     with torch.no_grad():
         next_actions, next_logps = [], []
         h = next_ego.new_zeros((b, actor.hidden_dim))
         for t in range(l):
-            na, nlp, h, _ = actor.sample(
-                next_ego[:, t],
-                next_entities[:, t],
-                next_mask[:, t],
-                h,
-                deterministic=False,
-            )
-            next_actions.append(na)
-            next_logps.append(nlp)
+            na, nlp, h, _ = actor.sample(next_ego[:, t], next_entities[:, t], next_mask[:, t], h, deterministic=False)
+            next_actions.append(na); next_logps.append(nlp)
             if t < l - 1:
                 h = reset_hidden(h, done[:, t, 0].bool())
-        next_actions, next_logps = torch.stack(next_actions, 1), torch.stack(
-            next_logps, 1
-        )
+        next_actions, next_logps = torch.stack(next_actions, 1), torch.stack(next_logps, 1)
     flat = train_mask.reshape(-1)
-    cs, act = (
-        current_scene.reshape(b * l, -1)[flat],
-        action.reshape(b * l, 2)[flat],
-    )
-    ns, na = (
-        next_scene.reshape(b * l, -1)[flat],
-        next_actions.reshape(b * l, 2)[flat],
-    )
-    nlp, rew, dn = (
-        next_logps.reshape(b * l, 1)[flat],
-        reward.reshape(b * l, 1)[flat],
-        done.reshape(b * l, 1)[flat],
-    )
+    cs, act = current_scene.reshape(b*l, -1)[flat], action.reshape(b*l, 2)[flat]
+    ns, na = next_scene.reshape(b*l, -1)[flat], next_actions.reshape(b*l, 2)[flat]
+    nlp, rew, dn = next_logps.reshape(b*l, 1)[flat], reward.reshape(b*l, 1)[flat], done.reshape(b*l, 1)[flat]
     with torch.no_grad():
         tq1, tq2 = target_q(ns, na)
-        target = rew + float(gamma) * (1.0 - dn) * (
-            torch.minimum(tq1, tq2) - float(alpha) * nlp
-        )
+        target = rew + float(gamma) * (1.0-dn) * (torch.minimum(tq1, tq2) - float(alpha)*nlp)
     q1, q2 = q(cs, act)
     q_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
-    q_opt.zero_grad(set_to_none=True)
-    q_loss.backward()
-    torch.nn.utils.clip_grad_norm_(q.parameters(), max_grad_norm)
-    q_opt.step()
-    for p in q.parameters():
-        p.requires_grad_(False)
-    hidden = ego.new_zeros((b, actor.hidden_dim))
-    actor_terms = []
-    logp_values = []
-    bc_terms = []
+    q_opt.zero_grad(set_to_none=True); q_loss.backward(); torch.nn.utils.clip_grad_norm_(q.parameters(), max_grad_norm); q_opt.step()
+    for p in q.parameters(): p.requires_grad_(False)
+    hidden = ego.new_zeros((b, actor.hidden_dim)); actor_terms=[]; logp_values=[]; bc_terms=[]
     for t in range(l):
-        pa, logp, hidden, _ = actor.sample(
-            ego[:, t], entities[:, t], mask[:, t], hidden, deterministic=False
-        )
+        pa, logp, hidden, _ = actor.sample(ego[:, t], entities[:, t], mask[:, t], hidden, deterministic=False)
         if train_mask[:, t].any():
             tq1a, tq2a = q(hidden, pa)
-            actor_terms.append(
-                (float(alpha) * logp - torch.minimum(tq1a, tq2a))[
-                    train_mask[:, t]
-                ]
-            )
+            actor_terms.append((float(alpha)*logp - torch.minimum(tq1a, tq2a))[train_mask[:, t]])
             logp_values.append(logp[train_mask[:, t]])
-            if teacher_action is not None and float(bc_coeff) > 0.0:
+            if teacher_action is not None and float(bc_coeff)>0.0:
                 valid_teacher = train_mask[:, t] & teacher_mask[:, t]
                 if valid_teacher.any():
-                    deterministic_action = deterministic_action_from_scene(
-                        actor, hidden
-                    )
-                    bc_terms.append(
-                        behavior_cloning_loss(
-                            deterministic_action[valid_teacher],
-                            teacher_action[:, t][valid_teacher],
-                            coefficient=float(bc_coeff),
-                        )
-                    )
-        if t < l - 1:
-            hidden = reset_hidden(hidden, done[:, t, 0].bool())
+                    deterministic_action = deterministic_action_from_scene(actor, hidden)
+                    bc_terms.append(behavior_cloning_loss(deterministic_action[valid_teacher], teacher_action[:, t][valid_teacher], coefficient=float(bc_coeff)))
+        if t < l-1: hidden = reset_hidden(hidden, done[:, t,0].bool())
     sac_actor_loss = torch.cat(actor_terms, 0).mean()
-    bc_loss = (
-        torch.stack(bc_terms).mean() if bc_terms else sac_actor_loss * 0.0
-    )
+    bc_loss = torch.stack(bc_terms).mean() if bc_terms else sac_actor_loss*0.0
     actor_loss = sac_actor_loss + bc_loss
-    actor_opt.zero_grad(set_to_none=True)
-    actor_loss.backward()
-    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
-    actor_opt.step()
-    for p in q.parameters():
-        p.requires_grad_(True)
+    actor_opt.zero_grad(set_to_none=True); actor_loss.backward(); torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm); actor_opt.step()
+    for p in q.parameters(): p.requires_grad_(True)
     _polyak(q, target_q, float(tau))
-    mean_logp = torch.cat(logp_values, 0).mean()
-    return {
-        "q_loss": float(q_loss.detach()),
-        "actor_loss": float(actor_loss.detach()),
-        "sac_actor_loss": float(sac_actor_loss.detach()),
-        "bc_loss": float(bc_loss.detach()),
-        "mean_logp": float(mean_logp.detach()),
-    }
+    mean_logp = torch.cat(logp_values,0).mean()
+    return {"q_loss":float(q_loss.detach()), "actor_loss":float(actor_loss.detach()), "sac_actor_loss":float(sac_actor_loss.detach()), "bc_loss":float(bc_loss.detach()), "mean_logp":float(mean_logp.detach())}
 
 
-def save_stasac_checkpoint(
-    path,
-    actor: STASACActor,
-    q: TwinRecurrentQ,
-    metadata=None,
-    *,
-    observation_version: str | None = None,
-    forecaster_metadata: dict | None = None,
-):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "actor": actor.state_dict(),
-            "q": q.state_dict(),
-            "ego_dim": actor.encoder.ego_dim,
-            "entity_dim": actor.entity_dim,
-            "hidden_dim": actor.hidden_dim,
-            "observation_version": observation_version or BASE_OBSERVATION_VERSION,
-            "forecaster_metadata": dict(forecaster_metadata or {}),
-            "metadata": dict(metadata or {}),
-        },
-        path,
-    )
+def save_stasac_checkpoint(path, actor: STASACActor, q: TwinRecurrentQ, metadata=None, *, observation_version: str | None = None, forecaster_metadata: dict | None = None):
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "actor": actor.state_dict(), "q": q.state_dict(), "ego_dim": actor.encoder.ego_dim,
+        "entity_dim": actor.entity_dim, "hidden_dim": actor.hidden_dim,
+        "observation_version": observation_version or BASE_OBSERVATION_VERSION,
+        "forecaster_metadata": dict(forecaster_metadata or {}), "metadata": dict(metadata or {}),
+    }, path)
 
 
 def load_stasac_checkpoint(path, ego_dim: int | None = None):
@@ -344,18 +209,11 @@ def load_stasac_checkpoint(path, ego_dim: int | None = None):
     ego_dim = int(ego_dim if ego_dim is not None else ck["ego_dim"])
     hidden_dim = int(ck.get("hidden_dim", 128))
     entity_dim = int(ck.get("entity_dim", 14))
-    actor = STASACActor(
-        ego_dim=ego_dim, hidden_dim=hidden_dim, entity_dim=entity_dim
-    )
+    actor = STASACActor(ego_dim=ego_dim, hidden_dim=hidden_dim, entity_dim=entity_dim)
     q = TwinRecurrentQ(hidden_dim=hidden_dim)
-    actor.load_state_dict(ck["actor"])
-    q.load_state_dict(ck["q"])
+    actor.load_state_dict(ck["actor"]); q.load_state_dict(ck["q"])
     metadata = dict(ck.get("metadata", {}))
-    metadata.setdefault(
-        "observation_version", ck.get("observation_version", BASE_OBSERVATION_VERSION)
-    )
+    metadata.setdefault("observation_version", ck.get("observation_version", BASE_OBSERVATION_VERSION))
     metadata.setdefault("entity_dim", entity_dim)
-    metadata.setdefault(
-        "forecaster_metadata", dict(ck.get("forecaster_metadata", {}))
-    )
+    metadata.setdefault("forecaster_metadata", dict(ck.get("forecaster_metadata", {})))
     return actor, q, metadata
