@@ -1,0 +1,82 @@
+name: Forecast-ST-SAC Stage-0 Competence Diagnostic
+
+on:
+  push:
+    branches: [research/beast-baselines-v1]
+    paths:
+      - ".github/workflows/stasac-stage0-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+      FORECASTER_QUALIFICATION_RUN: "36297558724"
+      FORECASTER_SHA256: "abcc637ecf76d2486340360ffc004dc25dd07339be49880d4bafb42c742a8db4"
+      DIAGNOSTIC_STEPS: "20000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy<2.0" scipy cvxpy osqp
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Download frozen qualified forecaster
+        uses: actions/download-artifact@v4
+        with:
+          name: human-forecaster-qualification
+          path: results/frozen_forecaster
+          run-id: 36297558724
+          github-token: ${{ github.token }}
+      - name: Verify frozen predictor
+        run: |
+          echo "${FORECASTER_SHA256}  results/frozen_forecaster/human_forecaster.pt" | sha256sum -c -
+      - name: Train diagnostic candidate
+        run: |
+          python -m benchmark.stasac_training_runner \
+            --agent-steps ${DIAGNOSTIC_STEPS} \
+            --seed 71 \
+            --out results/stage0_diagnostic_71 \
+            --max-episode-steps 600 \
+            --burn-in 4 \
+            --train-len 8 \
+            --batch-size 8 \
+            --gate-interval-episodes 5 \
+            --forecaster-checkpoint results/frozen_forecaster/human_forecaster.pt
+      - name: Report unchanged competence gate trajectory
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from benchmark.orca_teacher import should_promote_curriculum_stage
+
+          s=json.loads(Path('results/stage0_diagnostic_71/summary.json').read_text())
+          gates=s['competence_gates']
+          stage0=[g for g in gates if int(g['stage'])==0]
+          assert stage0, 'no Stage-0 competence evaluations recorded'
+          best=max(stage0,key=lambda g: float(g['policy']['success_rate']))
+          final=stage0[-1]
+          print('STAGE0_BEST', json.dumps(best, sort_keys=True))
+          print('STAGE0_FINAL', json.dumps(final, sort_keys=True))
+          print('STAGE0_PROMOTED', int(any(bool(g['promoted']) for g in stage0)))
+          print('UNCHANGED_GATE_BEST_PASS', int(should_promote_curriculum_stage(
+              episodes=int(best['policy']['episodes']),
+              success_rate=float(best['policy']['success_rate']),
+              collision_rate=float(best['policy']['collision_rate']),
+          )))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage0-diagnostic-71
+          path: results/stage0_diagnostic_71/
+          if-no-files-found: warn
