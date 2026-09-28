@@ -21,6 +21,7 @@ on:
       - "tests/test_warehouse_scenario_world.py"
       - "tests/test_spatiotemporal_policy.py"
       - "tests/test_stasac_training.py"
+      - "tests/test_stasac_bc_recurrent_state.py"
       - "tests/test_stasac_warehouse.py"
       - "tests/test_stasac_training_runner.py"
       - "tests/test_orca_teacher_warmstart.py"
@@ -57,6 +58,7 @@ jobs:
             $(test -f tests/test_warehouse_scenario_world.py && echo tests/test_warehouse_scenario_world.py) \
             $(test -f tests/test_spatiotemporal_policy.py && echo tests/test_spatiotemporal_policy.py) \
             $(test -f tests/test_stasac_training.py && echo tests/test_stasac_training.py) \
+            $(test -f tests/test_stasac_bc_recurrent_state.py && echo tests/test_stasac_bc_recurrent_state.py) \
             $(test -f tests/test_stasac_warehouse.py && echo tests/test_stasac_warehouse.py) \
             $(test -f tests/test_stasac_training_runner.py && echo tests/test_stasac_training_runner.py) \
             $(test -f tests/test_orca_teacher_warmstart.py && echo tests/test_orca_teacher_warmstart.py) \
