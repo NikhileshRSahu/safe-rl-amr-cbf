@@ -52,6 +52,26 @@ def local_human_navigation_catalog() -> tuple[ScenarioSpec, ...]:
     )
 
 
+def unpredictable_motion_catalog() -> tuple[ScenarioSpec, ...]:
+    """Held-out non-reciprocal pedestrian suite for the final controller test.
+
+    These scenarios are deliberately excluded from the training curriculum and
+    development/validation screens.  They contain bounded but seed-varying
+    stop/go, lateral cut-in and compound non-reciprocal behavior.  Neither
+    controller receives future event timing; both see the same paired world.
+    """
+    return (
+        ScenarioSpec("surprise_stop_go", "unpredictable_human", 6, 1, 1.0, "high"),
+        ScenarioSpec("lateral_cut_in", "unpredictable_human", 6, 1, 1.0, "high"),
+        ScenarioSpec("compound_nonreciprocal", "unpredictable_human", 8, 1, 1.0, "high"),
+    )
+
+
+def unpredictable_motion_holdout_seeds() -> tuple[int, ...]:
+    """Final-only seeds, disjoint from every training/validation/legacy holdout set."""
+    return tuple(range(15100, 15130))
+
+
 def development_evaluation_seeds() -> tuple[int, ...]:
     """Development-only screening seeds never used for gradient training."""
     return tuple(range(10300, 10320))
