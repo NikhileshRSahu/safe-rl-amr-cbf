@@ -5,6 +5,9 @@ on:
     branches: [research/beast-baselines-v1]
     paths:
       - ".github/workflows/stasac-stage0-diagnostic.yml"
+      - "benchmark/train_stasac_cbf.py"
+      - "benchmark/stasac_training_runner.py"
+      - "tests/test_stasac_teacher_handoff.py"
   workflow_dispatch:
 
 permissions:
