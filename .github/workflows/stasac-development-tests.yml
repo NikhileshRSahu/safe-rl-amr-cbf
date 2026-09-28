@@ -26,6 +26,7 @@ on:
       - "tests/test_stasac_training_runner.py"
       - "tests/test_orca_teacher_warmstart.py"
       - "tests/test_best_vs_best_protocol.py"
+      - "tests/test_unpredictable_motion_protocol.py"
       - "tests/test_best_vs_best_evaluation.py"
       - "tests/test_best_vs_best_runner.py"
       - ".github/workflows/stasac-development-tests.yml"
@@ -63,5 +64,6 @@ jobs:
             $(test -f tests/test_stasac_training_runner.py && echo tests/test_stasac_training_runner.py) \
             $(test -f tests/test_orca_teacher_warmstart.py && echo tests/test_orca_teacher_warmstart.py) \
             $(test -f tests/test_best_vs_best_protocol.py && echo tests/test_best_vs_best_protocol.py) \
+            $(test -f tests/test_unpredictable_motion_protocol.py && echo tests/test_unpredictable_motion_protocol.py) \
             $(test -f tests/test_best_vs_best_evaluation.py && echo tests/test_best_vs_best_evaluation.py) \
             $(test -f tests/test_best_vs_best_runner.py && echo tests/test_best_vs_best_runner.py)
