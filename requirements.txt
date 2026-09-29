@@ -29,5 +29,9 @@ tensorboard>=2.14
 # Console progress bars (train.py)
 tqdm>=4.66
 
-# Optional: episode GIF export in evaluate.py (--save-video-dir)
+# Video export for Aegis vs A*+DWA comparison
 imageio>=2.31
+imageio-ffmpeg>=0.5
+
+# Tests
+pytest>=8.0
